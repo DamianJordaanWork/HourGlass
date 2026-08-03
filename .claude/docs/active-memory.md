@@ -2,7 +2,12 @@
 
 _Update this after every work chunk. Newest status at top._
 
-## Current phase: **Harvest = source of truth; entries fully manageable (start/edit/restart/delete/link + adopt Harvest entries). Next: calendar OAuth, SQLite, packaging**
+## Current phase: **Harvest = source of truth; entries fully manageable (continue/edit/delete/link + adopt Harvest entries); metadata opt-in. Next: calendar OAuth, SQLite, packaging**
+
+## Snapshot (2026-08-03 session 3f — metadata toggle + continue-not-restart)
+- **hg1 embedding is now opt-in.** New `Settings.embedMetadata` (**default false**); Settings → "Harvest sync" card toggles it. `TrackingService.pushToHarvest` reads it; off (or default-value) → notes stay clean and any stale tag is stripped on next sync. `embedMetadata(interval, enabled)` gated on the flag.
+- **"Continue", not "Restart".** Replaced `restartInterval` (clone→new entry) with `continueInterval` (reopens the SAME interval; shifts `start` back by already-logged time so the clock resumes from the accrued total and the next stop UPDATES the same Harvest entry — no new entry). Local card button "Restart"→**Continue**; external Harvest row "Start"→**Continue** (`continueFromEntry` = import + continue). Covered by a new unit test (same-id, resume-from-accrued, updates same entry).
+- 56 tests + typecheck + build green; verified in-browser (Continue labels + Harvest-sync toggle).
 
 ## Snapshot (2026-08-03 session 3e — Harvest source-of-truth + git)
 - **Model clarified: Harvest is source of truth** (see ADR-009). Local SQLite is the cache/link + analytics. Implemented:

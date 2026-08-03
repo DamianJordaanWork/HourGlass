@@ -167,21 +167,32 @@ export class TrackingService {
     return synced;
   }
 
-  /** Resume work on a stopped entry: start a fresh timer with the same mapping. */
-  async restartInterval(id: Id, date?: IsoDate): Promise<TimeInterval> {
-    const src = await this.deps.intervals.get(id);
-    if (!src) throw new Error(`Interval not found: ${id}`);
-    return this.startTracking({
-      date: date ?? src.date,
-      source: src.source,
-      harvestProjectId: src.harvestProjectId,
-      harvestTaskId: src.harvestTaskId,
-      projectName: src.projectName,
-      taskName: src.taskName,
-      notes: src.notes,
-      workItemRef: src.workItemRef,
-      templateId: src.templateId,
-    });
+  /**
+   * Continue a stopped entry: reopen the SAME interval so time keeps accruing on
+   * the same Harvest entry (not a new one). The start is shifted back by the time
+   * already logged, so the running clock resumes from the accumulated total and,
+   * on the next stop, the linked Harvest entry is updated with the new total.
+   */
+  async continueInterval(id: Id): Promise<TimeInterval> {
+    const settings = await this.deps.settings.get();
+    if (settings.autoStopOnSwitch) {
+      const running = await this.deps.intervals.getRunning();
+      if (running && running.id !== id) await this.stopTracking(running.id);
+    }
+    const current = await this.deps.intervals.get(id);
+    if (!current) throw new Error(`Interval not found: ${id}`);
+    if (current.end === undefined) return current; // already running
+    const nowMs = new Date(this.deps.clock.nowIso()).getTime();
+    const priorMs = Math.max(0, new Date(current.end).getTime() - new Date(current.start).getTime());
+    const nowIso = this.deps.clock.nowIso();
+    const reopened: TimeInterval = {
+      ...current,
+      start: new Date(nowMs - priorMs).toISOString(),
+      end: undefined,
+      updatedAt: nowIso,
+    };
+    await this.deps.intervals.upsert(reopened);
+    return reopened;
   }
 
   /**
@@ -260,7 +271,8 @@ export class TrackingService {
     if (round2(hours) <= 0) {
       return interval;
     }
-    const notes = embedMetadata(interval);
+    const { embedMetadata: embed } = await this.deps.settings.get();
+    const notes = embedMetadata(interval, embed);
     const externalReference = interval.workItemRef ? refFor(interval.workItemRef) : undefined;
 
     let harvestTimeEntryId = interval.harvestTimeEntryId;
@@ -311,12 +323,13 @@ function definedOnly<T extends object>(patch: T): Partial<T> {
 }
 
 /**
- * Note body + a minimal hg1 tag. We only embed when there's something Harvest
- * can't represent (a templateId, or a non-Manual source); a plain manual entry
- * keeps clean notes. Always strips any stale block first.
+ * Note body + a minimal hg1 tag. Only embedded when the user opts in (`enabled`)
+ * AND there's something Harvest can't represent (a templateId, or a non-Manual
+ * source). Always strips any stale block first, so turning the setting off (or
+ * editing) cleans the note.
  */
-function embedMetadata(interval: TimeInterval): string {
-  const worthEmbedding = interval.templateId !== undefined || interval.source !== 'Manual';
+function embedMetadata(interval: TimeInterval, enabled: boolean): string {
+  const worthEmbedding = enabled && (interval.templateId !== undefined || interval.source !== 'Manual');
   if (!worthEmbedding) return Hg1.strip(interval.notes);
   const payload: Hg1Payload = { v: 1, source: interval.source, templateId: interval.templateId };
   return Hg1.embed(interval.notes, payload);

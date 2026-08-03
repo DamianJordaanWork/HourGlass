@@ -107,7 +107,9 @@ describe('TrackingService', () => {
 
   it('stop computes hours, embeds hg1, sends external ref, and syncs CompletedWork', async () => {
     const harvest = new FakeHarvest();
-    const { service, ado } = makeService(clock, harvest);
+    const { service, repos, ado } = makeService(clock, harvest);
+    const current = await repos.settings.get();
+    await repos.settings.save({ ...current, embedMetadata: true }); // opt in for this test
     const i = await service.startTracking({
       date: '2026-08-03',
       source: 'WorkItem',
@@ -166,22 +168,29 @@ describe('TrackingService', () => {
     expect(ado.calls[1]).toEqual({ id: 'c1', wi: 4821, delta: 0.5 });
   });
 
-  it('restartInterval starts a fresh running timer cloned from a stopped one', async () => {
+  it('continueInterval reopens the SAME entry, resuming from the accrued total', async () => {
     const harvest = new FakeHarvest();
     const { service } = makeService(clock, harvest);
-    const i = await service.startTracking({ date: '2026-08-03', source: 'QuickTemplate', harvestProjectId: 7, harvestTaskId: 8, notes: 'PRs', templateId: 'qt-1' });
-    clock.advance(600_000);
-    await service.stopTracking(i.id);
+    const i = await service.startTracking({ date: '2026-08-03', source: 'WorkItem', harvestProjectId: 7, harvestTaskId: 8, notes: 'PRs' });
+    clock.advance(600_000); // 10m
+    const stopped = await service.stopTracking(i.id);
+    expect(stopped.harvestTimeEntryId).toBeDefined();
+    const createdCount = harvest.created.length;
 
-    const resumed = await service.restartInterval(i.id, '2026-08-04');
-    expect(resumed.id).not.toBe(i.id);
+    clock.advance(300_000); // 5m paused
+    const resumed = await service.continueInterval(i.id);
+    expect(resumed.id).toBe(i.id); // SAME interval, not a clone
     expect(resumed.end).toBeUndefined();
-    expect(resumed.date).toBe('2026-08-04');
-    expect(resumed.harvestProjectId).toBe(7);
-    expect(resumed.taskName).toBeUndefined();
-    expect(resumed.notes).toBe('PRs');
-    expect(resumed.templateId).toBe('qt-1');
-    expect((await service.getRunning())?.id).toBe(resumed.id);
+    // Clock resumes from the 10m already logged (not the 15m wall-clock gap).
+    expect(durationHours(resumed, clock.nowIso())).toBeCloseTo(10 / 60, 5);
+    expect((await service.getRunning())?.id).toBe(i.id);
+
+    clock.advance(300_000); // +5m
+    const stoppedAgain = await service.stopTracking(i.id);
+    expect(durationHours(stoppedAgain, clock.nowIso())).toBeCloseTo(15 / 60, 5);
+    // No new Harvest entry — the existing one is updated to the new total.
+    expect(harvest.created.length).toBe(createdCount);
+    expect(harvest.updated.some((u) => u.id === stopped.harvestTimeEntryId)).toBe(true);
   });
 
   it('importHarvestEntry adopts a Harvest entry once (idempotent) with exact hours', async () => {

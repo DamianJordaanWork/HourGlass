@@ -133,7 +133,7 @@ export function useTrackingActions(date: IsoDate) {
 
   const stop = useMutation({ mutationFn: (id: string) => c.tracking.stopTracking(id), onSuccess: invalidate });
   const remove = useMutation({ mutationFn: (id: string) => c.tracking.deleteInterval(id), onSuccess: invalidate });
-  const restart = useMutation({ mutationFn: (id: string) => c.tracking.restartInterval(id, date), onSuccess: invalidate });
+  const continueTimer = useMutation({ mutationFn: (id: string) => c.tracking.continueInterval(id), onSuccess: invalidate });
 
   const startManual = useMutation({
     mutationFn: (i: ManualEntryInput) => c.tracking.startTracking({ date, source: 'Manual', ...i }),
@@ -149,17 +149,13 @@ export function useTrackingActions(date: IsoDate) {
   });
 
   // ── Harvest-entry first-class ops ─────────────────────────────────────────
-  const startFromEntry = useMutation({
-    mutationFn: (e: HarvestTimeEntry) =>
-      c.tracking.startTracking({
-        date,
-        source: 'Manual',
-        harvestProjectId: e.projectId,
-        harvestTaskId: e.taskId,
-        projectName: e.projectName,
-        taskName: e.taskName,
-        notes: e.notes,
-      }),
+  // Continue a Harvest-only entry: adopt it into a local interval, then reopen it
+  // so time keeps accruing on that same Harvest entry.
+  const continueFromEntry = useMutation({
+    mutationFn: async (e: HarvestTimeEntry) => {
+      const local = await c.tracking.importHarvestEntry(e);
+      return c.tracking.continueInterval(local.id);
+    },
     onSuccess: invalidate,
   });
   const editExternal = useMutation({
@@ -180,8 +176,8 @@ export function useTrackingActions(date: IsoDate) {
   });
 
   return {
-    startWorkItem, startTemplate, startMeeting, logMeeting, stop, remove, restart,
-    startManual, logManual, update, startFromEntry, editExternal, linkHarvest, deleteHarvestEntry,
+    startWorkItem, startTemplate, startMeeting, logMeeting, stop, remove, continueTimer,
+    startManual, logManual, update, continueFromEntry, editExternal, linkHarvest, deleteHarvestEntry,
   };
 }
 

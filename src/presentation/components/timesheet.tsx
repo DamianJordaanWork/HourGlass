@@ -218,7 +218,7 @@ function EntryCard({
         <button onClick={() => actions.stop.mutate(interval.id)} className="rounded-md bg-accent px-2.5 py-1 text-xs font-semibold text-white hover:opacity-90">Stop</button>
       ) : (
         <>
-          <button onClick={() => actions.restart.mutate(interval.id)} className="rounded-md border border-hairline px-2.5 py-1 text-xs font-medium text-muted hover:text-ink" title="Resume this entry as a new timer">Restart</button>
+          <button onClick={() => actions.continueTimer.mutate(interval.id)} className="rounded-md border border-hairline px-2.5 py-1 text-xs font-medium text-muted hover:text-ink" title="Continue timing this entry">Continue</button>
           <button onClick={onEdit} className="rounded-md border border-hairline px-2.5 py-1 text-xs font-medium text-muted hover:text-ink">Edit</button>
         </>
       )}
@@ -240,7 +240,7 @@ function ExternalEntryCard({ entry, date, onEdit }: { entry: HarvestTimeEntry; d
       </div>
       <span className="rounded bg-elevated px-1.5 py-0.5 text-[10px] font-medium text-muted">Harvest</span>
       <span className="tabular text-sm font-semibold text-ink">{formatHours(entry.hours)}</span>
-      <button onClick={() => actions.startFromEntry.mutate(entry)} className="rounded-md bg-primary px-2.5 py-1 text-xs font-semibold text-on-primary hover:bg-primary-hover" title="Start a timer for this project/task">Start</button>
+      <button onClick={() => actions.continueFromEntry.mutate(entry)} className="rounded-md bg-primary px-2.5 py-1 text-xs font-semibold text-on-primary hover:bg-primary-hover" title="Continue timing this Harvest entry">Continue</button>
       <button onClick={onEdit} className="rounded-md border border-hairline px-2.5 py-1 text-xs font-medium text-muted hover:text-ink">Edit</button>
     </div>
   );

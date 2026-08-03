@@ -18,6 +18,8 @@ export interface Settings {
   readonly autoStopOnSwitch: boolean;
   /** Roll multiple same-day/same-task sessions into one Harvest entry (Phase 2). */
   readonly aggregateSameTaskPerDay: boolean;
+  /** Embed the hidden `hg1` reconciliation tag in Harvest notes. Off by default. */
+  readonly embedMetadata: boolean;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -30,4 +32,5 @@ export const DEFAULT_SETTINGS: Settings = {
   theme: 'system',
   autoStopOnSwitch: true,
   aggregateSameTaskPerDay: false,
+  embedMetadata: false,
 };

@@ -10,6 +10,7 @@ export function SettingsPane() {
       <h2 className="text-lg font-semibold">Settings</h2>
       <HarvestSection />
       <AdoSection />
+      <SyncSection />
       <WorkdaySection />
     </div>
   );
@@ -197,6 +198,33 @@ function AdoSection() {
           </div>
         </div>
       </div>
+    </Card>
+  );
+}
+
+// ── Harvest sync ────────────────────────────────────────────────────────────
+function SyncSection() {
+  const { data } = useSettings();
+  const saveSettings = useSaveSettings();
+  if (!data) return null;
+  const embed = data.embedMetadata;
+  return (
+    <Card title="Harvest sync" subtitle="Control what Hourglass writes into your Harvest entries.">
+      <label className="flex items-start gap-2 text-sm text-ink">
+        <input
+          type="checkbox"
+          className="mt-0.5"
+          checked={embed}
+          onChange={(e) => saveSettings.mutate({ ...data, embedMetadata: e.target.checked })}
+        />
+        <span>
+          Embed reconciliation metadata (<code className="text-xs text-muted">hg1</code>) in Harvest notes
+          <span className="mt-0.5 block text-xs text-muted">
+            Off by default — keeps notes clean. When on, a small hidden tag is appended to help re-link entries across
+            devices. Turning it off strips the tag on the next sync.
+          </span>
+        </span>
+      </label>
     </Card>
   );
 }
