@@ -140,7 +140,8 @@ export function useTrackingActions(date: IsoDate) {
     onSuccess: invalidate,
   });
   const logManual = useMutation({
-    mutationFn: (i: ManualEntryInput & { hours: number }) => c.tracking.logManualTime({ date, source: 'Manual', ...i }),
+    mutationFn: (i: ManualEntryInput & { hours?: number; start?: string; end?: string }) =>
+      c.tracking.logManualTime({ date, source: 'Manual', ...i }),
     onSuccess: invalidate,
   });
   const update = useMutation({

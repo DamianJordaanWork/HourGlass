@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react';
+import { format, parseISO } from 'date-fns';
 import type { IsoDate } from '@domain/common/types';
 import type { HarvestTimeEntry } from '@domain/harvest/harvest-types';
 import type { TimeInterval } from '@domain/time/time-interval';
 import { durationHours } from '@domain/time/time-interval';
+import type { UpdateIntervalInput } from '@application/tracking-service';
 import { HarvestPicker, resolveNames } from '@presentation/components/harvest-picker';
 import { useHarvestEntries, useTrackingActions } from '@presentation/hooks/use-tracking';
 import { useHarvestOptions } from '@presentation/hooks/use-templates';
@@ -11,17 +13,34 @@ import { formatHours, longDayLabel } from '@presentation/lib/format';
 const inputCls =
   'w-full rounded-lg border border-hairline bg-canvas px-3 py-2 text-sm text-ink outline-none placeholder:text-muted focus:border-primary';
 
-/** "H:MM" → decimal hours (also accepts a bare decimal like "1.5"). */
+const TIME_RE = /^([01]?\d|2[0-3]):([0-5]\d)$/;
+
+/** "H:MM" (or a bare decimal) → decimal hours. */
 function parseDuration(text: string): number {
   const clock = text.trim().match(/^(\d+):([0-5]?\d)$/);
   if (clock) return Number(clock[1]) + Number(clock[2]) / 60;
   const dec = Number(text);
   return Number.isFinite(dec) && dec > 0 ? dec : 0;
 }
-
 function formatDuration(hours: number): string {
   const total = Math.max(0, Math.round(hours * 60));
   return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
+}
+function minutesOf(hhmm: string): number | null {
+  const m = TIME_RE.exec(hhmm.trim());
+  return m ? Number(m[1]) * 60 + Number(m[2]) : null;
+}
+function hhmmFromMinutes(min: number): string {
+  const m = ((Math.round(min) % 1440) + 1440) % 1440;
+  return `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+}
+/** Local wall-clock time (HH:MM) of an ISO instant. */
+function localTime(iso: string): string {
+  return format(parseISO(iso), 'HH:mm');
+}
+/** ISO instant for a local HH:MM on `date` (no trailing Z ⇒ parsed as local). */
+function isoOf(date: IsoDate, hhmm: string): string {
+  return new Date(`${date}T${hhmm}:00`).toISOString();
 }
 
 export function EntryModal({
@@ -42,16 +61,16 @@ export function EntryModal({
   const actions = useTrackingActions(date);
   const external = harvestEntry !== undefined && interval === undefined;
 
-  const initialProject = interval?.harvestProjectId ?? harvestEntry?.projectId;
-  const initialTask = interval?.harvestTaskId ?? harvestEntry?.taskId;
-  const initialNotes = interval?.notes ?? harvestEntry?.notes ?? '';
   const initialHours = interval
     ? durationHours(interval, interval.end ?? interval.start)
     : (harvestEntry?.hours ?? 0);
 
-  const [projectId, setProjectId] = useState<number | undefined>(initialProject);
-  const [taskId, setTaskId] = useState<number | undefined>(initialTask);
-  const [notes, setNotes] = useState(initialNotes);
+  const [projectId, setProjectId] = useState<number | undefined>(interval?.harvestProjectId ?? harvestEntry?.projectId);
+  const [taskId, setTaskId] = useState<number | undefined>(interval?.harvestTaskId ?? harvestEntry?.taskId);
+  const [notes, setNotes] = useState(interval?.notes ?? harvestEntry?.notes ?? '');
+  // Times are optional "extras". Only a real, stopped interval seeds them.
+  const [startTime, setStartTime] = useState(interval?.end ? localTime(interval.start) : '');
+  const [endTime, setEndTime] = useState(interval?.end ? localTime(interval.end) : '');
   const [duration, setDuration] = useState(mode === 'edit' ? formatDuration(initialHours) : '0:00');
   const [seeded, setSeeded] = useState(mode === 'edit');
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -65,8 +84,51 @@ export function EntryModal({
     }
   }, [seeded, opts]);
 
+  // ── keep start / end / duration consistent as the user types ──────────────
+  const onStart = (v: string) => {
+    setStartTime(v);
+    const s = minutesOf(v);
+    const e = minutesOf(endTime);
+    if (s !== null && e !== null) setDuration(formatDuration(Math.max(0, e - s) / 60));
+  };
+  const onEnd = (v: string) => {
+    setEndTime(v);
+    const s = minutesOf(startTime);
+    const e = minutesOf(v);
+    if (s !== null && e !== null) setDuration(formatDuration(Math.max(0, e - s) / 60));
+  };
+  const onDuration = (v: string) => {
+    setDuration(v);
+    const mins = Math.round(parseDuration(v) * 60);
+    const s = minutesOf(startTime);
+    const e = minutesOf(endTime);
+    if (s !== null) setEndTime(hhmmFromMinutes(s + mins));
+    else if (e !== null) setStartTime(hhmmFromMinutes(e - mins));
+  };
+
+  /** Resolve the chosen times into { startIso?, endIso?, hours }. */
+  const resolveTimes = () => {
+    const s = minutesOf(startTime);
+    const e = minutesOf(endTime);
+    const h = parseDuration(duration);
+    if (s !== null && e !== null) {
+      const hours = Math.max(0, (e - s) / 60);
+      return { startIso: isoOf(date, startTime), endIso: isoOf(date, endTime), hours };
+    }
+    if (s !== null && h > 0) {
+      const startIso = isoOf(date, startTime);
+      return { startIso, endIso: new Date(new Date(startIso).getTime() + h * 3_600_000).toISOString(), hours: h };
+    }
+    if (e !== null && h > 0) {
+      const endIso = isoOf(date, endTime);
+      return { startIso: new Date(new Date(endIso).getTime() - h * 3_600_000).toISOString(), endIso, hours: h };
+    }
+    return { startIso: undefined as string | undefined, endIso: undefined as string | undefined, hours: h };
+  };
+
   const hours = parseDuration(duration);
-  const isLive = mode === 'new' && hours === 0;
+  const noTimes = minutesOf(startTime) === null && minutesOf(endTime) === null;
+  const isLive = mode === 'new' && hours === 0 && noTimes;
   const pending =
     actions.startManual.isPending ||
     actions.logManual.isPending ||
@@ -76,15 +138,26 @@ export function EntryModal({
   const submit = () => {
     const names = resolveNames(opts, projectId, taskId);
     const base = { harvestProjectId: projectId, harvestTaskId: taskId, notes: notes.trim(), ...names };
+    const { startIso, endIso, hours: h } = resolveTimes();
+
     if (mode === 'new') {
-      if (isLive) actions.startManual.mutate(base, { onSuccess: onClose });
-      else actions.logManual.mutate({ ...base, hours }, { onSuccess: onClose });
+      if (isLive) {
+        actions.startManual.mutate(base, { onSuccess: onClose });
+      } else {
+        actions.logManual.mutate({ ...base, hours: h, start: startIso, end: endIso }, { onSuccess: onClose });
+      }
       return;
     }
-    // edit: recompute end from the anchor start + duration.
-    const anchor = interval?.start ?? `${date}T00:00:00.000Z`;
-    const end = new Date(new Date(anchor).getTime() + hours * 3_600_000).toISOString();
-    const patch = { ...base, end };
+
+    // edit: prefer explicit times; fall back to duration off the anchor start.
+    let times: Pick<UpdateIntervalInput, 'start' | 'end'>;
+    if (startIso && endIso) {
+      times = { start: startIso, end: endIso };
+    } else {
+      const anchor = startIso ?? interval?.start ?? `${date}T00:00:00.000Z`;
+      times = { start: anchor, end: new Date(new Date(anchor).getTime() + h * 3_600_000).toISOString() };
+    }
+    const patch: UpdateIntervalInput = { ...base, ...times };
     if (external && harvestEntry) {
       actions.editExternal.mutate({ entry: harvestEntry, patch }, { onSuccess: onClose });
     } else if (interval) {
@@ -111,18 +184,30 @@ export function EntryModal({
             <HarvestPicker options={opts} projectId={projectId} taskId={taskId} onChange={(p, t) => { setProjectId(p); setTaskId(t); }} allowNone />
           </div>
 
-          <div className="flex gap-2">
-            <input className={inputCls} value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Notes (optional)" />
-            <input className={inputCls + ' w-24 text-right tabular'} value={duration} onChange={(e) => setDuration(e.target.value)} placeholder="0:00" aria-label="Duration (h:mm)" />
+          <input className={inputCls} value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Notes (optional)" />
+
+          {/* Time — set any of: start+end, start+duration, end+duration, or just duration */}
+          <div className="grid grid-cols-3 gap-2">
+            <label className="flex flex-col gap-1">
+              <span className="text-xs font-medium text-muted">Start <span className="opacity-60">(opt)</span></span>
+              <input className={inputCls} type="time" value={startTime} onChange={(e) => onStart(e.target.value)} />
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="text-xs font-medium text-muted">End <span className="opacity-60">(opt)</span></span>
+              <input className={inputCls} type="time" value={endTime} onChange={(e) => onEnd(e.target.value)} />
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="text-xs font-medium text-muted">Duration</span>
+              <input className={inputCls + ' text-right tabular'} value={duration} onChange={(e) => onDuration(e.target.value)} placeholder="0:00" aria-label="Duration (h:mm)" />
+            </label>
           </div>
 
           {mode === 'new' && (
             <p className="text-[11px] text-muted">
-              {isLive ? 'Leave the time at 0:00 to start a live timer.' : `Logs ${formatDuration(hours)} to Harvest immediately.`}
+              {isLive ? 'Leave everything blank to start a live timer.' : `Logs ${formatDuration(hours)} to Harvest immediately.`}
             </p>
           )}
 
-          {/* Link a local entry to an existing Harvest entry */}
           {mode === 'edit' && !external && interval && (
             <div>
               <button className="text-[11px] font-medium text-primary hover:underline" onClick={() => setShowLink((s) => !s)}>
