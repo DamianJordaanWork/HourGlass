@@ -3,7 +3,9 @@ import type { WorkItem } from '@domain/work-items/work-item';
 import type { Meeting } from '@domain/calendar/meeting';
 import { meetingDurationHours } from '@domain/calendar/meeting';
 import { useSelectedDay } from '@presentation/state/selected-day';
+import { useEntryModalStore } from '@presentation/state/entry-modal';
 import {
+  useMeetingMapping,
   useMeetings,
   useQuickTemplates,
   useTrackingActions,
@@ -70,7 +72,23 @@ function WorkItemsTab() {
 function WorkItemCard({ item }: { item: WorkItem }) {
   const { date } = useSelectedDay();
   const actions = useTrackingActions(date);
+  const openEntryModal = useEntryModalStore((s) => s.open);
   const { data: mapping } = useWorkItemMapping(item);
+
+  const start = () => {
+    if (mapping) {
+      actions.startWorkItem.mutate(item);
+    } else {
+      // No resolved rule — require the user to pick a Harvest project/task
+      // rather than starting an entry that could never be linked (ADR-009).
+      openEntryModal({
+        source: 'WorkItem',
+        notes: item.title,
+        workItemRef: { connectionId: item.connectionId, workItemId: item.id, workItemType: item.workItemType, url: item.url },
+      });
+    }
+  };
+
   return (
     <div className="rounded-lg border border-hairline bg-canvas p-3">
       <div className="mb-1 flex items-center gap-1.5">
@@ -87,7 +105,7 @@ function WorkItemCard({ item }: { item: WorkItem }) {
           <span className="rounded bg-elevated px-1.5 py-0.5 text-[10px] text-muted">unmapped</span>
         )}
         <span className="ml-auto" />
-        <StartButton onClick={() => actions.startWorkItem.mutate(item)} />
+        <StartButton onClick={start} />
       </div>
     </div>
   );
@@ -96,24 +114,48 @@ function WorkItemCard({ item }: { item: WorkItem }) {
 function MeetingsTab() {
   const { date } = useSelectedDay();
   const { data: meetings, isLoading } = useMeetings(date);
-  const actions = useTrackingActions(date);
   if (isLoading) return <Hint>Loading meetings…</Hint>;
   if (!meetings?.length) return <Hint>No meetings for this day.</Hint>;
   return (
     <div className="flex flex-col gap-2">
       {meetings.map((m: Meeting) => (
-        <div key={m.id} className="rounded-lg border border-hairline bg-canvas p-3">
-          <div className="mb-0.5 text-sm font-medium text-ink">{m.title}</div>
-          <div className="tabular mb-2 text-[11px] text-muted">
-            {formatTimeRange(m.start, m.end)} · {formatHours(meetingDurationHours(m))} · {m.calendarName}
-          </div>
-          <div className="flex items-center gap-2">
-            <button onClick={() => actions.logMeeting.mutate(m)} className="rounded-md border border-hairline px-2.5 py-1.5 text-xs font-medium text-muted hover:text-ink">Log</button>
-            <span className="ml-auto" />
-            <StartButton onClick={() => actions.startMeeting.mutate(m)} />
-          </div>
-        </div>
+        <MeetingCard key={m.id} meeting={m} />
       ))}
+    </div>
+  );
+}
+
+function MeetingCard({ meeting: m }: { meeting: Meeting }) {
+  const { date } = useSelectedDay();
+  const actions = useTrackingActions(date);
+  const openEntryModal = useEntryModalStore((s) => s.open);
+  const { data: mapping } = useMeetingMapping(m);
+
+  const start = () => {
+    if (mapping) actions.startMeeting.mutate(m);
+    else openEntryModal({ source: 'Meeting', notes: m.title });
+  };
+  const log = () => {
+    if (mapping) actions.logMeeting.mutate(m);
+    else openEntryModal({ source: 'Meeting', notes: m.title, initialDurationHours: meetingDurationHours(m) });
+  };
+
+  return (
+    <div className="rounded-lg border border-hairline bg-canvas p-3">
+      <div className="mb-0.5 text-sm font-medium text-ink">{m.title}</div>
+      <div className="tabular mb-2 text-[11px] text-muted">
+        {formatTimeRange(m.start, m.end)} · {formatHours(meetingDurationHours(m))} · {m.calendarName}
+      </div>
+      <div className="flex items-center gap-2">
+        {mapping && (
+          <span className="truncate rounded bg-primary-soft px-1.5 py-0.5 text-[10px] font-medium text-primary-soft-text">
+            → {mapping.projectName ?? 'Mapped'}{mapping.taskName ? ` / ${mapping.taskName}` : ''}
+          </span>
+        )}
+        <button onClick={log} className="rounded-md border border-hairline px-2.5 py-1.5 text-xs font-medium text-muted hover:text-ink">Log</button>
+        <span className="ml-auto" />
+        <StartButton onClick={start} />
+      </div>
     </div>
   );
 }
@@ -122,21 +164,30 @@ function TemplatesTab() {
   const { date } = useSelectedDay();
   const { data: templates, isLoading } = useQuickTemplates();
   const actions = useTrackingActions(date);
+  const openEntryModal = useEntryModalStore((s) => s.open);
   if (isLoading) return <Hint>Loading templates…</Hint>;
   if (!templates?.length) return <Hint>No quick templates yet.</Hint>;
   return (
     <div className="flex flex-col gap-2">
-      {templates.map((t) => (
-        <div key={t.id} className="flex items-center gap-2.5 rounded-lg border border-hairline bg-canvas p-3">
-          <span className="text-lg" aria-hidden>{t.icon ?? '⏱️'}</span>
-          <div className="min-w-0">
-            <div className="truncate text-sm font-medium text-ink">{t.label}</div>
-            {t.defaultNotes ? <div className="truncate text-[11px] text-muted">{t.defaultNotes}</div> : null}
+      {templates.map((t) => {
+        const mapped = t.harvestProjectId !== undefined && t.harvestTaskId !== undefined;
+        const start = () => {
+          if (mapped) actions.startTemplate.mutate(t);
+          else openEntryModal({ source: 'QuickTemplate', notes: t.defaultNotes, templateId: t.id });
+        };
+        return (
+          <div key={t.id} className="flex items-center gap-2.5 rounded-lg border border-hairline bg-canvas p-3">
+            <span className="text-lg" aria-hidden>{t.icon ?? '⏱️'}</span>
+            <div className="min-w-0">
+              <div className="truncate text-sm font-medium text-ink">{t.label}</div>
+              {t.defaultNotes ? <div className="truncate text-[11px] text-muted">{t.defaultNotes}</div> : null}
+              {!mapped && <div className="truncate text-[10px] text-muted">unmapped</div>}
+            </div>
+            <span className="ml-auto" />
+            <StartButton onClick={start} />
           </div>
-          <span className="ml-auto" />
-          <StartButton onClick={() => actions.startTemplate.mutate(t)} />
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }

@@ -2,7 +2,13 @@
 
 _Update this after every work chunk. Newest status at top._
 
-## Current phase: **Harvest = source of truth; entries fully manageable (continue/edit/delete/link + adopt Harvest entries); metadata opt-in. Next: calendar OAuth, SQLite, packaging**
+## Current phase: **Harvest-link invariant enforced end-to-end (domain + UI); metadata opt-in; entries fully manageable. Next: calendar OAuth, SQLite, packaging**
+
+## Snapshot (2026-08-03 session 3h — block un-linkable entries, end to end)
+- **Domain guard:** `TrackingService.startTracking`/`logManualTime`/`updateInterval` throw `UnmappedEntryError` (new `domain/errors.ts`) when project+task is missing or partial. Covered by a dedicated test (blank, partial, and a simulated legacy-unmapped entry that can't be re-saved without adding a mapping).
+- **UI enforces the same rule with zero silent defaults:** `EntryModal` no longer auto-picks the first Harvest project for a new entry (previously did, defeating the point); Save/Start/Add is disabled + shows "Harvest is the source of truth — pick a project and task before saving." until both are chosen. Verified live (button `disabled` flips false→true only after picking a real project).
+- **Unmapped Start/Log routes through the modal instead of failing:** new global `useEntryModalStore` (`presentation/state/entry-modal.ts`) + `NewEntryPrefill`. `WorkItemCard`/`MeetingCard`(new, extracted from `MeetingsTab`)/quick-templates check their resolved mapping; if mapped, one-click Start as before (unchanged, no friction); if not, opens the modal prefilled with notes + `workItemRef`/`templateId`/`source` (and a meeting's computed duration for "Log", so it defaults to "Add" not "Start"). `ManualEntryInput`/`startManual`/`logManual` now carry an optional `source` override + `workItemRef`/`templateId` so the context survives into the actual `startTracking`/`logManualTime` call. Added `useMeetingMapping` hook (mirrors `useWorkItemMapping`).
+- 57 tests + typecheck + build green.
 
 ## Snapshot (2026-08-03 session 3g — flexible time editor in the entry modal)
 - **Edit/new modal now sets optional time "extras":** Start, End, Duration fields kept in sync — enter any of start+end, start+duration, end+duration, or duration-only. Times are local HH:MM ↔ ISO (`entry-modal.tsx` `resolveTimes`). `logManual` hook + `logManualTime` carry explicit start/end; edit builds a `{start,end}` patch. Verified in-browser (09:00 + 1:30 → End auto-fills 10:30, button → "Add time entry"). Typecheck/build green, 56 tests.

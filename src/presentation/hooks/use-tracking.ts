@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { IsoDate } from '@domain/common/types';
+import type { Id, IsoDate, TrackingSource } from '@domain/common/types';
 import type { WorkItem } from '@domain/work-items/work-item';
 import { meetingDurationHours, type Meeting } from '@domain/calendar/meeting';
 import type { QuickTemplate } from '@domain/templates/quick-template';
 import type { HarvestTimeEntry } from '@domain/harvest/harvest-types';
+import type { WorkItemRef } from '@domain/time/time-interval';
 import type { UpdateIntervalInput } from '@application/tracking-service';
 import { useContainer } from '@presentation/container-context';
 
@@ -15,6 +16,10 @@ export interface ManualEntryInput {
   readonly projectName?: string;
   readonly taskName?: string;
   readonly notes: string;
+  /** Preserves the originating context when a prefilled unmapped start is completed. */
+  readonly source?: TrackingSource;
+  readonly workItemRef?: WorkItemRef;
+  readonly templateId?: Id;
 }
 
 export function useWorkItems() {
@@ -58,6 +63,19 @@ export function useWorkItemMapping(item: WorkItem) {
     queryKey: ['wi-map', item.id],
     queryFn: async () => {
       const match = await c.mapping.forWorkItem(item);
+      if (!match) return null;
+      return { ...match.target, ...c.harvestName(match.target.harvestProjectId, match.target.harvestTaskId) };
+    },
+  });
+}
+
+/** Resolve a meeting's Harvest mapping (used to decide Start/Log vs. the picker). */
+export function useMeetingMapping(meeting: Meeting) {
+  const c = useContainer();
+  return useQuery({
+    queryKey: ['meeting-map', meeting.id],
+    queryFn: async () => {
+      const match = await c.mapping.forMeeting(meeting);
       if (!match) return null;
       return { ...match.target, ...c.harvestName(match.target.harvestProjectId, match.target.harvestTaskId) };
     },
@@ -136,12 +154,12 @@ export function useTrackingActions(date: IsoDate) {
   const continueTimer = useMutation({ mutationFn: (id: string) => c.tracking.continueInterval(id), onSuccess: invalidate });
 
   const startManual = useMutation({
-    mutationFn: (i: ManualEntryInput) => c.tracking.startTracking({ date, source: 'Manual', ...i }),
+    mutationFn: (i: ManualEntryInput) => c.tracking.startTracking({ date, ...i, source: i.source ?? 'Manual' }),
     onSuccess: invalidate,
   });
   const logManual = useMutation({
     mutationFn: (i: ManualEntryInput & { hours?: number; start?: string; end?: string }) =>
-      c.tracking.logManualTime({ date, source: 'Manual', ...i }),
+      c.tracking.logManualTime({ date, ...i, source: i.source ?? 'Manual' }),
     onSuccess: invalidate,
   });
   const update = useMutation({

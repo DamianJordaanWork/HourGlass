@@ -9,6 +9,7 @@ import type {
 import type { ExternalReference, HarvestTimeEntry } from '@domain/harvest/harvest-types';
 import { durationHours, type TimeInterval, type WorkItemRef } from '@domain/time/time-interval';
 import { Hg1, type Hg1Payload } from '@domain/harvest/hg1-metadata';
+import { UnmappedEntryError } from '@domain/errors';
 
 export interface StartInput {
   readonly date: IsoDate;
@@ -77,6 +78,7 @@ export class TrackingService {
 
   /** Start a live timer for `date` (the selected day). Auto-stops any running one. */
   async startTracking(input: StartInput): Promise<TimeInterval> {
+    requireMapping(input.harvestProjectId, input.harvestTaskId);
     const settings = await this.deps.settings.get();
     if (settings.autoStopOnSwitch) {
       const running = await this.deps.intervals.getRunning();
@@ -120,6 +122,7 @@ export class TrackingService {
 
   /** Log a completed entry directly (meeting log / manual add). */
   async logManualTime(input: ManualInput): Promise<TimeInterval> {
+    requireMapping(input.harvestProjectId, input.harvestTaskId);
     const now = this.deps.clock.nowIso();
     const start = input.start ?? now;
     const end =
@@ -161,6 +164,7 @@ export class TrackingService {
       isManual: true,
       updatedAt: now,
     };
+    requireMapping(merged.harvestProjectId, merged.harvestTaskId);
     const hours = round2(durationHours(merged, now));
     const synced = await this.pushToHarvest(merged, hours);
     await this.deps.intervals.upsert(synced);
@@ -316,6 +320,11 @@ export class TrackingService {
 
 const round2 = (n: number): number => Math.round(n * 100) / 100;
 const errMsg = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+
+/** Harvest is the source of truth (ADR-009) — refuse to persist an unlinked entry. */
+function requireMapping(projectId?: number, taskId?: number): void {
+  if (projectId === undefined || taskId === undefined) throw new UnmappedEntryError();
+}
 
 /** Drop `undefined` fields so a patch never clobbers existing values. */
 function definedOnly<T extends object>(patch: T): Partial<T> {

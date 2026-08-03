@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { format, parseISO } from 'date-fns';
 import type { IsoDate } from '@domain/common/types';
 import type { HarvestTimeEntry } from '@domain/harvest/harvest-types';
@@ -8,6 +8,7 @@ import type { UpdateIntervalInput } from '@application/tracking-service';
 import { HarvestPicker, resolveNames } from '@presentation/components/harvest-picker';
 import { useHarvestEntries, useTrackingActions } from '@presentation/hooks/use-tracking';
 import { useHarvestOptions } from '@presentation/hooks/use-templates';
+import type { NewEntryPrefill } from '@presentation/state/entry-modal';
 import { formatHours, longDayLabel } from '@presentation/lib/format';
 
 const inputCls =
@@ -47,12 +48,15 @@ export function EntryModal({
   mode,
   interval,
   harvestEntry,
+  prefill,
   date,
   onClose,
 }: {
   mode: 'new' | 'edit';
   interval?: TimeInterval;
   harvestEntry?: HarvestTimeEntry;
+  /** Context to carry through for a Start/Log that had no resolved mapping. */
+  prefill?: NewEntryPrefill;
   date: IsoDate;
   onClose: () => void;
 }) {
@@ -63,26 +67,21 @@ export function EntryModal({
 
   const initialHours = interval
     ? durationHours(interval, interval.end ?? interval.start)
-    : (harvestEntry?.hours ?? 0);
+    : (harvestEntry?.hours ?? prefill?.initialDurationHours ?? 0);
 
+  // Harvest is the source of truth (ADR-009): a new entry never defaults to a
+  // guessed project — the user must pick one before Start/Add is enabled.
   const [projectId, setProjectId] = useState<number | undefined>(interval?.harvestProjectId ?? harvestEntry?.projectId);
   const [taskId, setTaskId] = useState<number | undefined>(interval?.harvestTaskId ?? harvestEntry?.taskId);
-  const [notes, setNotes] = useState(interval?.notes ?? harvestEntry?.notes ?? '');
+  const [notes, setNotes] = useState(interval?.notes ?? harvestEntry?.notes ?? prefill?.notes ?? '');
   // Times are optional "extras". Only a real, stopped interval seeds them.
   const [startTime, setStartTime] = useState(interval?.end ? localTime(interval.start) : '');
   const [endTime, setEndTime] = useState(interval?.end ? localTime(interval.end) : '');
-  const [duration, setDuration] = useState(mode === 'edit' ? formatDuration(initialHours) : '0:00');
-  const [seeded, setSeeded] = useState(mode === 'edit');
+  const [duration, setDuration] = useState(formatDuration(initialHours));
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [showLink, setShowLink] = useState(false);
 
-  useEffect(() => {
-    if (!seeded && opts.length > 0) {
-      setProjectId(opts[0]!.id);
-      setTaskId(opts[0]!.tasks[0]?.id);
-      setSeeded(true);
-    }
-  }, [seeded, opts]);
+  const mappingMissing = projectId === undefined || taskId === undefined;
 
   // ── keep start / end / duration consistent as the user types ──────────────
   const onStart = (v: string) => {
@@ -136,15 +135,19 @@ export function EntryModal({
     actions.editExternal.isPending;
 
   const submit = () => {
+    if (mappingMissing) return; // guarded by the disabled button; defensive no-op
     const names = resolveNames(opts, projectId, taskId);
     const base = { harvestProjectId: projectId, harvestTaskId: taskId, notes: notes.trim(), ...names };
     const { startIso, endIso, hours: h } = resolveTimes();
 
     if (mode === 'new') {
+      // Carry through the originating context (work item/template/meeting) so a
+      // previously-unmapped Start/Log still lands as the right kind of entry.
+      const withContext = { ...base, source: prefill?.source, workItemRef: prefill?.workItemRef, templateId: prefill?.templateId };
       if (isLive) {
-        actions.startManual.mutate(base, { onSuccess: onClose });
+        actions.startManual.mutate(withContext, { onSuccess: onClose });
       } else {
-        actions.logManual.mutate({ ...base, hours: h, start: startIso, end: endIso }, { onSuccess: onClose });
+        actions.logManual.mutate({ ...withContext, hours: h, start: startIso, end: endIso }, { onSuccess: onClose });
       }
       return;
     }
@@ -182,6 +185,11 @@ export function EntryModal({
           <div>
             <div className="mb-1 text-xs font-medium text-muted">Project / Task</div>
             <HarvestPicker options={opts} projectId={projectId} taskId={taskId} onChange={(p, t) => { setProjectId(p); setTaskId(t); }} allowNone />
+            {mappingMissing && (
+              <p className="mt-1 text-[11px] text-warning">
+                Harvest is the source of truth — pick a project and task before saving.
+              </p>
+            )}
           </div>
 
           <input className={inputCls} value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Notes (optional)" />
@@ -219,7 +227,7 @@ export function EntryModal({
         </div>
 
         <div className="mt-5 flex items-center gap-2">
-          <button onClick={submit} disabled={pending} className="rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-on-primary hover:bg-primary-hover disabled:opacity-50">
+          <button onClick={submit} disabled={pending || mappingMissing} className="rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-on-primary hover:bg-primary-hover disabled:opacity-50">
             {pending ? 'Saving…' : primaryLabel}
           </button>
           <button onClick={onClose} className="rounded-lg border border-hairline px-4 py-2 text-sm font-medium text-muted hover:text-ink">Cancel</button>

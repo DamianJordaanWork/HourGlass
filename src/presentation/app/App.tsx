@@ -9,7 +9,10 @@ import { InsightsPane } from '@presentation/components/insights';
 import { NotesPane } from '@presentation/components/notes';
 import { TemplatesPane } from '@presentation/components/templates';
 import { SettingsPane } from '@presentation/components/settings';
+import { EntryModal } from '@presentation/components/entry-modal';
 import { useConnectionStatus } from '@presentation/hooks/use-connections';
+import { useEntryModalStore } from '@presentation/state/entry-modal';
+import { useSelectedDay } from '@presentation/state/selected-day';
 
 export function App() {
   return (
@@ -23,6 +26,9 @@ function Shell() {
   const container = useContainer();
   const qc = useQueryClient();
   const view = useView((s) => s.view);
+  const { date } = useSelectedDay();
+  const prefill = useEntryModalStore((s) => s.prefill);
+  const closeEntryModal = useEntryModalStore((s) => s.close);
 
   useEffect(() => {
     void container.ready.then(() => qc.invalidateQueries());
@@ -45,6 +51,8 @@ function Shell() {
           </aside>
         )}
       </div>
+      {/* Global: opened whenever a Start/Log has no resolved Harvest mapping yet. */}
+      {prefill && <EntryModal mode="new" date={date} prefill={prefill} onClose={closeEntryModal} />}
     </div>
   );
 }

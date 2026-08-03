@@ -6,6 +6,7 @@ import type { IClock } from '@domain/common/clock';
 import type { IHarvestClient } from '@domain/ports';
 import type { CreateTimeEntry, HarvestTimeEntry, UpdateTimeEntry } from '@domain/harvest/harvest-types';
 import { durationHours } from '@domain/time/time-interval';
+import { UnmappedEntryError } from '@domain/errors';
 
 class FakeClock implements IClock {
   constructor(private t: number) {}
@@ -218,6 +219,22 @@ describe('TrackingService', () => {
     await service.updateInterval(i.id, { notes: 'linked+edited' });
     expect(harvest.created.length).toBe(before);
     expect(harvest.updated.some((u) => u.id === 999)).toBe(true);
+  });
+
+  it('refuses to start, log, or save an entry without a Harvest project+task (source of truth)', async () => {
+    const { service, repos } = makeService(clock);
+    await expect(service.startTracking({ date: '2026-08-03', source: 'Manual' })).rejects.toThrow(UnmappedEntryError);
+    await expect(service.startTracking({ date: '2026-08-03', source: 'Manual', harvestProjectId: 1 })).rejects.toThrow(UnmappedEntryError); // partial
+    await expect(service.logManualTime({ date: '2026-08-03', source: 'Manual', hours: 1 })).rejects.toThrow(UnmappedEntryError);
+
+    // A legacy entry that predates the guard (e.g. seeded directly) can't be
+    // saved again without adding a mapping — editing notes alone isn't enough.
+    const legacy = { id: 'legacy-1', date: '2026-08-03', notes: 'old unmapped entry', start: clock.nowIso(), end: clock.nowIso(), isManual: true, source: 'Manual' as const, createdAt: clock.nowIso(), updatedAt: clock.nowIso() };
+    await repos.intervals.upsert(legacy);
+    await expect(service.updateInterval('legacy-1', { notes: 'still unmapped' })).rejects.toThrow(UnmappedEntryError);
+    // Adding the mapping in the same edit succeeds.
+    const fixed = await service.updateInterval('legacy-1', { harvestProjectId: 9, harvestTaskId: 3 });
+    expect(fixed.harvestProjectId).toBe(9);
   });
 
   it('keeps data locally when Harvest is absent', async () => {
