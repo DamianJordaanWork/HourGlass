@@ -1,6 +1,6 @@
 # Hourglass
 
-The ultimate personal time tracker: **quick-track Azure DevOps tickets and calendar meetings straight into Harvest**, with a templating engine that auto-maps them to the right Harvest project/task. Local-first (SQLite) with resilient best-effort Harvest sync, ported from two predecessor apps (Grain — deep ADO integration; HarvestTracker — resilient interval model + analytics).
+The ultimate personal time tracker: **quick-track Azure DevOps tickets and calendar meetings straight into Harvest**, with a templating engine that auto-maps them to the right Harvest project/task. **Harvest is the source of truth** (every persisted entry links to a Harvest entry via `harvestTimeEntryId`; see ADR-009); local SQLite is a resilient working cache + analytics store, timing entries locally and pushing explicit hours to Harvest best-effort. Ported from two predecessor apps (Grain — deep ADO integration; HarvestTracker — resilient interval model + analytics).
 
 ## Stack
 

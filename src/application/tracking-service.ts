@@ -6,7 +6,7 @@ import type {
   ISettingsRepository,
   ITimeIntervalRepository,
 } from '@domain/ports';
-import type { ExternalReference } from '@domain/harvest/harvest-types';
+import type { ExternalReference, HarvestTimeEntry } from '@domain/harvest/harvest-types';
 import { durationHours, type TimeInterval, type WorkItemRef } from '@domain/time/time-interval';
 import { Hg1, type Hg1Payload } from '@domain/harvest/hg1-metadata';
 
@@ -184,6 +184,56 @@ export class TrackingService {
     });
   }
 
+  /**
+   * Adopt an existing Harvest entry into a local interval (Harvest is the source
+   * of truth). Idempotent — returns the existing linked interval if present. No
+   * Harvest write. Times are synthetic (Harvest duration entries carry no
+   * start/end) but the hours are exact.
+   */
+  async importHarvestEntry(entry: HarvestTimeEntry): Promise<TimeInterval> {
+    const existing = (await this.deps.intervals.listByDate(entry.spentDate)).find(
+      (i) => i.harvestTimeEntryId === entry.id,
+    );
+    if (existing) return existing;
+    const now = this.deps.clock.nowIso();
+    const start = `${entry.spentDate}T00:00:00.000Z`;
+    const end = new Date(new Date(start).getTime() + entry.hours * 3_600_000).toISOString();
+    const interval: TimeInterval = {
+      id: this.deps.newId(),
+      date: entry.spentDate,
+      harvestProjectId: entry.projectId,
+      harvestTaskId: entry.taskId,
+      projectName: entry.projectName,
+      taskName: entry.taskName,
+      notes: Hg1.strip(entry.notes),
+      start,
+      end,
+      isManual: true,
+      harvestTimeEntryId: entry.id,
+      syncedHours: entry.hours,
+      source: 'Manual',
+      createdAt: now,
+      updatedAt: now,
+    };
+    await this.deps.intervals.upsert(interval);
+    return interval;
+  }
+
+  /** Link a local interval to an existing Harvest entry so future syncs update it. */
+  async linkToHarvestEntry(intervalId: Id, harvestEntryId: number, entryHours: number): Promise<TimeInterval> {
+    const current = await this.deps.intervals.get(intervalId);
+    if (!current) throw new Error(`Interval not found: ${intervalId}`);
+    const now = this.deps.clock.nowIso();
+    const linked: TimeInterval = {
+      ...current,
+      harvestTimeEntryId: harvestEntryId,
+      syncedHours: entryHours,
+      updatedAt: now,
+    };
+    await this.deps.intervals.upsert(linked);
+    return linked;
+  }
+
   async deleteInterval(id: Id): Promise<void> {
     const existing = await this.deps.intervals.get(id);
     await this.deps.intervals.delete(id);
@@ -204,16 +254,13 @@ export class TrackingService {
     if (!harvest || interval.harvestProjectId === undefined || interval.harvestTaskId === undefined) {
       return interval;
     }
-    const payload: Hg1Payload = {
-      v: 1,
-      intervalId: interval.id,
-      source: interval.source,
-      templateId: interval.templateId,
-      ado: interval.workItemRef
-        ? { connectionId: interval.workItemRef.connectionId, workItemId: interval.workItemRef.workItemId }
-        : undefined,
-    };
-    const notes = Hg1.embed(interval.notes, payload);
+    // Never push 0 hours: Harvest treats an entry with no time as a *running*
+    // timer, which would collide with our local timing (a dual timer). Sub-minute
+    // stops just stay local until they accrue real time.
+    if (round2(hours) <= 0) {
+      return interval;
+    }
+    const notes = embedMetadata(interval);
     const externalReference = interval.workItemRef ? refFor(interval.workItemRef) : undefined;
 
     let harvestTimeEntryId = interval.harvestTimeEntryId;
@@ -261,6 +308,18 @@ const errMsg = (e: unknown): string => (e instanceof Error ? e.message : String(
 /** Drop `undefined` fields so a patch never clobbers existing values. */
 function definedOnly<T extends object>(patch: T): Partial<T> {
   return Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined)) as Partial<T>;
+}
+
+/**
+ * Note body + a minimal hg1 tag. We only embed when there's something Harvest
+ * can't represent (a templateId, or a non-Manual source); a plain manual entry
+ * keeps clean notes. Always strips any stale block first.
+ */
+function embedMetadata(interval: TimeInterval): string {
+  const worthEmbedding = interval.templateId !== undefined || interval.source !== 'Manual';
+  if (!worthEmbedding) return Hg1.strip(interval.notes);
+  const payload: Hg1Payload = { v: 1, source: interval.source, templateId: interval.templateId };
+  return Hg1.embed(interval.notes, payload);
 }
 
 /** Harvest native external reference for an ADO work item (guid auto-learn is Phase 2). */

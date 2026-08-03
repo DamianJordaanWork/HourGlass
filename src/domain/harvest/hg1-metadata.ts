@@ -3,18 +3,21 @@ import type { Id, TrackingSource } from '@domain/common/types';
 /**
  * The `hg1` reconciliation tag embedded a couple of blank lines below a Harvest
  * entry's note body, as a fenced ```hg1 block holding base64url JSON. Hidden on
- * display, decoded for reconciliation, regenerated on write. SQLite stays the
- * source of truth — this is portability/recovery only.
+ * display, decoded for reconciliation, regenerated on write.
+ *
+ * Harvest is the source of truth, so we only store what Harvest can't natively
+ * represent: the local `source` and, when present, the `templateId`. Everything
+ * else — project, task, notes, hours, date, and the ADO work-item link (native
+ * `external_reference`) — is already on the Harvest entry, and local intervals
+ * reconcile by `harvestTimeEntryId`. Keeping the payload tiny keeps the note clean.
  *
  * Encoding is pluggable (plain base64url by default; scramble/encrypt later).
  */
 
 export interface Hg1Payload {
   readonly v: 1;
-  readonly intervalId: Id;
   readonly source: TrackingSource;
   readonly templateId?: Id;
-  readonly ado?: { readonly connectionId: string; readonly workItemId: number };
 }
 
 const FENCE_OPEN = '```hg1';

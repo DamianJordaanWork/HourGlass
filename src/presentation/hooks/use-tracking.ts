@@ -4,6 +4,7 @@ import type { IsoDate } from '@domain/common/types';
 import type { WorkItem } from '@domain/work-items/work-item';
 import { meetingDurationHours, type Meeting } from '@domain/calendar/meeting';
 import type { QuickTemplate } from '@domain/templates/quick-template';
+import type { HarvestTimeEntry } from '@domain/harvest/harvest-types';
 import type { UpdateIntervalInput } from '@application/tracking-service';
 import { useContainer } from '@presentation/container-context';
 
@@ -147,7 +148,41 @@ export function useTrackingActions(date: IsoDate) {
     onSuccess: invalidate,
   });
 
-  return { startWorkItem, startTemplate, startMeeting, logMeeting, stop, remove, restart, startManual, logManual, update };
+  // ── Harvest-entry first-class ops ─────────────────────────────────────────
+  const startFromEntry = useMutation({
+    mutationFn: (e: HarvestTimeEntry) =>
+      c.tracking.startTracking({
+        date,
+        source: 'Manual',
+        harvestProjectId: e.projectId,
+        harvestTaskId: e.taskId,
+        projectName: e.projectName,
+        taskName: e.taskName,
+        notes: e.notes,
+      }),
+    onSuccess: invalidate,
+  });
+  const editExternal = useMutation({
+    mutationFn: async ({ entry, patch }: { entry: HarvestTimeEntry; patch: UpdateIntervalInput }) => {
+      const local = await c.tracking.importHarvestEntry(entry);
+      return c.tracking.updateInterval(local.id, patch);
+    },
+    onSuccess: invalidate,
+  });
+  const linkHarvest = useMutation({
+    mutationFn: ({ intervalId, entry }: { intervalId: string; entry: HarvestTimeEntry }) =>
+      c.tracking.linkToHarvestEntry(intervalId, entry.id, entry.hours),
+    onSuccess: invalidate,
+  });
+  const deleteHarvestEntry = useMutation({
+    mutationFn: (id: number) => c.deleteHarvestEntry(id),
+    onSuccess: invalidate,
+  });
+
+  return {
+    startWorkItem, startTemplate, startMeeting, logMeeting, stop, remove, restart,
+    startManual, logManual, update, startFromEntry, editExternal, linkHarvest, deleteHarvestEntry,
+  };
 }
 
 /** Re-render every second while `active`, to tick the running timer. */

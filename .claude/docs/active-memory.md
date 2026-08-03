@@ -2,7 +2,16 @@
 
 _Update this after every work chunk. Newest status at top._
 
-## Current phase: **Harvest + ADO LIVE; full entry management done (edit/restart/manual + Harvest import). Next: calendar OAuth, SQLite, packaging**
+## Current phase: **Harvest = source of truth; entries fully manageable (start/edit/restart/delete/link + adopt Harvest entries). Next: calendar OAuth, SQLite, packaging**
+
+## Snapshot (2026-08-03 session 3e — Harvest source-of-truth + git)
+- **Model clarified: Harvest is source of truth** (see ADR-009). Local SQLite is the cache/link + analytics. Implemented:
+  - **hg1 trimmed** to `{ v, source, templateId? }` (dropped `intervalId` + `ado` — ADO link is native `external_reference`; reconcile via `harvestTimeEntryId`). Only embedded when non-default → clean Harvest notes.
+  - **Dual-timer guard**: `pushToHarvest` never sends `hours ≤ 0` (Harvest reads a timeless entry as a running timer). We time locally; positive hours pushed on stop.
+  - **Harvest entries first-class**: `TrackingService.importHarvestEntry` (adopt), `linkToHarvestEntry` (attach existing); container `deleteHarvestEntry`. External (Harvest-only) rows now have **Start / Edit / Delete**; local entries have **Restart / Edit**; **delete moved into the edit modal behind a 2-step confirm** (card ✕ removed). Edit modal has a **"Link to existing Harvest entry"** picker.
+- **Git initialized & committed.** Repo was commitless; baseline `chore: initial commit` (bd430bd) + this feature commit. `*.tsbuildinfo` added to `.gitignore`. Local-only, no remote — commit as work lands.
+- **Verified in-browser** against the live Harvest account: edit modal shows "Linked to Harvest #…", 2-step delete confirm, external rows Start/Edit. 56 tests + typecheck + build green.
+- **Deferred:** blocking un-mappable starts; reconciling divergent hours when linking; explicit start-time field; editing Harvest-only entries preserves synthetic times (hours exact).
 
 ## Snapshot (2026-08-03 session 3d — edit / restart / manual entry / show Harvest entries)
 - **All four requests shipped & verified in-browser** (real Harvest connection):

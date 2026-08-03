@@ -102,9 +102,8 @@ describe('WeeklyGoalCalculator', () => {
 describe('Hg1 metadata codec', () => {
   const payload: Hg1Payload = {
     v: 1,
-    intervalId: 'abc-123',
     source: 'WorkItem',
-    ado: { connectionId: 'conn-1', workItemId: 4821 },
+    templateId: 'tpl-9',
   };
 
   it('round-trips through embed/extract and hides from the note body', () => {
@@ -117,9 +116,9 @@ describe('Hg1 metadata codec', () => {
 
   it('replaces an existing block instead of stacking', () => {
     const once = Hg1.embed('note', payload);
-    const twice = Hg1.embed(once, { ...payload, intervalId: 'xyz' });
+    const twice = Hg1.embed(once, { ...payload, source: 'Meeting' });
     expect((twice.match(/```hg1/g) ?? []).length).toBe(1);
-    expect(Hg1.extract(twice)?.intervalId).toBe('xyz');
+    expect(Hg1.extract(twice)?.source).toBe('Meeting');
   });
 
   it('returns null when absent or corrupt', () => {

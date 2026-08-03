@@ -121,7 +121,11 @@ export function RunningTimerBanner() {
   );
 }
 
-type ModalState = { mode: 'new' } | { mode: 'edit'; interval: TimeInterval } | null;
+type ModalState =
+  | { mode: 'new' }
+  | { mode: 'edit'; interval: TimeInterval }
+  | { mode: 'edit-harvest'; entry: HarvestTimeEntry }
+  | null;
 
 export function TimesheetPane() {
   const { date } = useSelectedDay();
@@ -164,15 +168,16 @@ export function TimesheetPane() {
             <EntryCard key={iv.id} interval={iv} nowIso={nowIso} date={date} onEdit={() => setModal({ mode: 'edit', interval: iv })} />
           ))}
           {external.map((e) => (
-            <ExternalEntryCard key={`h-${e.id}`} entry={e} />
+            <ExternalEntryCard key={`h-${e.id}`} entry={e} date={date} onEdit={() => setModal({ mode: 'edit-harvest', entry: e })} />
           ))}
         </div>
       )}
 
       {modal && (
         <EntryModal
-          mode={modal.mode}
+          mode={modal.mode === 'new' ? 'new' : 'edit'}
           interval={modal.mode === 'edit' ? modal.interval : undefined}
+          harvestEntry={modal.mode === 'edit-harvest' ? modal.entry : undefined}
           date={date}
           onClose={() => setModal(null)}
         />
@@ -215,15 +220,15 @@ function EntryCard({
         <>
           <button onClick={() => actions.restart.mutate(interval.id)} className="rounded-md border border-hairline px-2.5 py-1 text-xs font-medium text-muted hover:text-ink" title="Resume this entry as a new timer">Restart</button>
           <button onClick={onEdit} className="rounded-md border border-hairline px-2.5 py-1 text-xs font-medium text-muted hover:text-ink">Edit</button>
-          <button onClick={() => actions.remove.mutate(interval.id)} className="rounded-md border border-hairline px-2.5 py-1 text-xs font-medium text-muted hover:text-danger" aria-label="Delete entry">✕</button>
         </>
       )}
     </div>
   );
 }
 
-/** A Harvest entry with no local interval (logged directly in Harvest). Read-only. */
-function ExternalEntryCard({ entry }: { entry: HarvestTimeEntry }) {
+/** A Harvest entry with no local interval (logged directly in Harvest). Fully actionable. */
+function ExternalEntryCard({ entry, date, onEdit }: { entry: HarvestTimeEntry; date: IsoDate; onEdit: () => void }) {
+  const actions = useTrackingActions(date);
   return (
     <div className="flex items-center gap-3 rounded-lg border border-dashed border-hairline bg-surface p-3">
       <span className="h-9 w-1.5 rounded-full" style={{ backgroundColor: projectColor(entry.projectId) }} />
@@ -235,6 +240,8 @@ function ExternalEntryCard({ entry }: { entry: HarvestTimeEntry }) {
       </div>
       <span className="rounded bg-elevated px-1.5 py-0.5 text-[10px] font-medium text-muted">Harvest</span>
       <span className="tabular text-sm font-semibold text-ink">{formatHours(entry.hours)}</span>
+      <button onClick={() => actions.startFromEntry.mutate(entry)} className="rounded-md bg-primary px-2.5 py-1 text-xs font-semibold text-on-primary hover:bg-primary-hover" title="Start a timer for this project/task">Start</button>
+      <button onClick={onEdit} className="rounded-md border border-hairline px-2.5 py-1 text-xs font-medium text-muted hover:text-ink">Edit</button>
     </div>
   );
 }

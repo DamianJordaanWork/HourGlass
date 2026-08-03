@@ -51,6 +51,8 @@ export interface Container {
   harvestProjectOptions(): HarvestProject[];
   /** Existing Harvest time entries in [from, to] (empty when unconnected). */
   listHarvestEntries(from: IsoDate, to: IsoDate): Promise<HarvestTimeEntry[]>;
+  /** Delete a Harvest entry directly (used for Harvest-only rows). */
+  deleteHarvestEntry(id: number): Promise<void>;
 }
 
 /**
@@ -144,6 +146,11 @@ export function createContainer(): Container {
         console.warn('[harvest] getTimeEntries failed', e);
         return [];
       }
+    },
+    async deleteHarvestEntry(id) {
+      const harvest = connections.harvest();
+      if (!harvest) return;
+      await harvest.deleteTimeEntry(id);
     },
     harvestProjectOptions() {
       const live = connections.projects();

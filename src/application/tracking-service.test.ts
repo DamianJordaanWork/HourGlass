@@ -5,6 +5,7 @@ import { MemoryStorage } from '@infrastructure/persistence/local-store';
 import type { IClock } from '@domain/common/clock';
 import type { IHarvestClient } from '@domain/ports';
 import type { CreateTimeEntry, HarvestTimeEntry, UpdateTimeEntry } from '@domain/harvest/harvest-types';
+import { durationHours } from '@domain/time/time-interval';
 
 class FakeClock implements IClock {
   constructor(private t: number) {}
@@ -181,6 +182,33 @@ describe('TrackingService', () => {
     expect(resumed.notes).toBe('PRs');
     expect(resumed.templateId).toBe('qt-1');
     expect((await service.getRunning())?.id).toBe(resumed.id);
+  });
+
+  it('importHarvestEntry adopts a Harvest entry once (idempotent) with exact hours', async () => {
+    const { service } = makeService(clock);
+    const entry = { id: 555, spentDate: '2026-08-03', hours: 0.5, notes: 'CRT Scrum\n\n\n```hg1\nx\n```', projectId: 9, projectName: 'P', taskId: 3, taskName: 'Meetings', isRunning: false };
+    const first = await service.importHarvestEntry(entry);
+    expect(first.harvestTimeEntryId).toBe(555);
+    expect(first.syncedHours).toBe(0.5);
+    expect(first.notes).toBe('CRT Scrum'); // hg1 stripped
+    expect(durationHours(first, first.end!)).toBeCloseTo(0.5, 5);
+    const again = await service.importHarvestEntry(entry);
+    expect(again.id).toBe(first.id); // no duplicate
+    expect(await service.listDay('2026-08-03')).toHaveLength(1);
+  });
+
+  it('linkToHarvestEntry attaches an existing Harvest id without double-counting on next push', async () => {
+    const harvest = new FakeHarvest();
+    const { service } = makeService(clock, harvest);
+    const i = await service.logManualTime({ date: '2026-08-03', source: 'Manual', harvestProjectId: 1, harvestTaskId: 2, hours: 1 });
+    const linked = await service.linkToHarvestEntry(i.id, 999, 1);
+    expect(linked.harvestTimeEntryId).toBe(999);
+    expect(linked.syncedHours).toBe(1);
+    // Editing now UPDATES entry 999 (not create) and no phantom Harvest create.
+    const before = harvest.created.length;
+    await service.updateInterval(i.id, { notes: 'linked+edited' });
+    expect(harvest.created.length).toBe(before);
+    expect(harvest.updated.some((u) => u.id === 999)).toBe(true);
   });
 
   it('keeps data locally when Harvest is absent', async () => {
