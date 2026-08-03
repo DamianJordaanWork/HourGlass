@@ -1,0 +1,104 @@
+/*
+ * Hourglass design tokens — the buildable source of truth for the visual system.
+ * Palette: cool-slate neutrals, indigo primary, teal "tracking-active" accent,
+ * semantics kept distinct from brand. Targets WCAG AA in both themes.
+ * Mirror of .claude/standards/design-system.md — keep the two in sync.
+ *
+ * Theme resolution: light by default; system dark via prefers-color-scheme unless
+ * the user pinned light; an explicit [data-theme] on <html> always wins.
+ */
+
+:root {
+  /* neutrals — cool slate (never pure black/white) */
+  --bg: #f6f7f9;
+  --surface: #ffffff;
+  --surface-2: #eef0f4;
+  --border: #dde1e8;
+  --text: #1a1d24;
+  --muted: #5b6472;
+
+  /* primary — indigo */
+  --primary: #4f46e5;
+  --primary-hover: #4338ca;
+  --on-primary: #ffffff;
+  --primary-soft: #eef0ff;
+  --primary-soft-text: #4338ca;
+
+  /* accent — teal (currently-tracking state) */
+  --accent: #14b8a6;
+  --accent-strong: #0f766e;
+  --accent-soft: #e7fbf7;
+  --accent-soft-text: #0f766e;
+
+  /* semantic — never doubles as brand */
+  --success: #22c55e;
+  --warning: #f59e0b;
+  --danger: #ef4444;
+  --info: #0ea5e9;
+
+  /* shape + type */
+  --radius-sm: 6px;
+  --radius: 10px;
+  --radius-lg: 14px;
+  --font-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto,
+    Helvetica, Arial, sans-serif;
+  --shadow-card: 0 1px 2px rgb(16 18 27 / 0.04), 0 1px 3px rgb(16 18 27 / 0.06);
+}
+
+/* System dark (only when the user hasn't pinned light) */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --bg: #0e1015;
+    --surface: #161922;
+    --surface-2: #1e222d;
+    --border: #2a2f3b;
+    --text: #e7eaf0;
+    --muted: #9aa3b2;
+
+    --primary: #6366f1;
+    --primary-hover: #818cf8;
+    --on-primary: #ffffff;
+    --primary-soft: #1e2440;
+    --primary-soft-text: #a5b4fc;
+
+    --accent: #2dd4bf;
+    --accent-strong: #14b8a6;
+    --accent-soft: #0c2a28;
+    --accent-soft-text: #2dd4bf;
+
+    --success: #34d399;
+    --warning: #fbbf24;
+    --danger: #f87171;
+    --info: #38bdf8;
+
+    --shadow-card: 0 1px 2px rgb(0 0 0 / 0.3), 0 1px 3px rgb(0 0 0 / 0.35);
+  }
+}
+
+/* Explicit override always wins */
+:root[data-theme='dark'] {
+  --bg: #0e1015;
+  --surface: #161922;
+  --surface-2: #1e222d;
+  --border: #2a2f3b;
+  --text: #e7eaf0;
+  --muted: #9aa3b2;
+
+  --primary: #6366f1;
+  --primary-hover: #818cf8;
+  --on-primary: #ffffff;
+  --primary-soft: #1e2440;
+  --primary-soft-text: #a5b4fc;
+
+  --accent: #2dd4bf;
+  --accent-strong: #14b8a6;
+  --accent-soft: #0c2a28;
+  --accent-soft-text: #2dd4bf;
+
+  --success: #34d399;
+  --warning: #fbbf24;
+  --danger: #f87171;
+  --info: #38bdf8;
+
+  --shadow-card: 0 1px 2px rgb(0 0 0 / 0.3), 0 1px 3px rgb(0 0 0 / 0.35);
+}

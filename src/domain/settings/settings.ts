@@ -1,0 +1,33 @@
+import type { HarvestProjectId, HarvestTaskId } from '@domain/common/types';
+
+export type ThemePref = 'system' | 'light' | 'dark';
+
+/** App-wide settings (single row). */
+export interface Settings {
+  readonly workDayStart: string; // 'HH:mm'
+  readonly workDayEnd: string; // 'HH:mm'
+  readonly breakMinutes: number;
+  readonly minDeadTimeMinutes: number;
+  readonly weeklyGoalHours: number;
+  readonly refreshIntervalMinutes: number;
+  readonly theme: ThemePref;
+  readonly harvestAccountId?: string;
+  readonly defaultProjectId?: HarvestProjectId;
+  readonly defaultTaskId?: HarvestTaskId;
+  /** Stop any running timer when a new one starts. */
+  readonly autoStopOnSwitch: boolean;
+  /** Roll multiple same-day/same-task sessions into one Harvest entry (Phase 2). */
+  readonly aggregateSameTaskPerDay: boolean;
+}
+
+export const DEFAULT_SETTINGS: Settings = {
+  workDayStart: '08:00',
+  workDayEnd: '17:00',
+  breakMinutes: 60,
+  minDeadTimeMinutes: 15,
+  weeklyGoalHours: 40,
+  refreshIntervalMinutes: 15,
+  theme: 'system',
+  autoStopOnSwitch: true,
+  aggregateSameTaskPerDay: false,
+};
