@@ -55,6 +55,7 @@ export interface OAuthConfig {
   readonly scopes: readonly string[];
   readonly authorizeUrl: string;
   readonly tokenUrl: string;
+  readonly redirectUri: string;
   readonly extraAuthParams?: Readonly<Record<string, string>>;
 }
 

@@ -49,6 +49,7 @@ export class FetchHttpTransport implements IHttpTransport {
 const DEV_PROXY_REWRITES: readonly HostRewrite[] = [
   { from: 'https://api.harvestapp.com', to: '/__harvest' },
   { from: 'https://dev.azure.com', to: '/__ado' },
+  { from: 'https://graph.microsoft.com', to: '/__graph' },
 ];
 
 /**

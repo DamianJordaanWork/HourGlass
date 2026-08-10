@@ -10,6 +10,7 @@ import {
 } from '@infrastructure/persistence/local-repositories';
 import { LocalSecretStore } from '@infrastructure/secrets/local-secret-store';
 import { createHttpTransport } from '@infrastructure/http/http-transport';
+import { WebRedirectOAuthService } from '@infrastructure/oauth/web-redirect-oauth-service';
 import {
   ConnectionManager,
   type HarvestName,
@@ -30,6 +31,8 @@ export type {
   HarvestConfigView,
   AdoConnectionView,
   AdoConnectionInput,
+  CalendarAccountView,
+  CalendarAccountInput,
 } from '@infrastructure/connections/connection-manager';
 
 export interface Container {
@@ -69,8 +72,10 @@ export function createContainer(): Container {
   const connections = new ConnectionManager({
     settings: repos.settings,
     adoConnections: repos.adoConnections,
+    calendarAccounts: repos.calendarAccounts,
     secrets: new LocalSecretStore(),
     transport: createHttpTransport(),
+    oauth: new WebRedirectOAuthService(),
     newId,
   });
 
@@ -126,10 +131,26 @@ export function createContainer(): Container {
       return batches.flat();
     },
     async listMeetings(date) {
-      // Calendar providers are a later phase; in live mode there are no seeded
-      // meetings, so return whatever has been synced locally (empty for now).
-      if (isConfigured()) return repos.meetings.listByDate(date);
-      return demoMeetings(date);
+      const accounts = (await repos.calendarAccounts.list()).filter((a) => a.enabled);
+      if (accounts.length === 0) {
+        return isConfigured() ? repos.meetings.listByDate(date) : demoMeetings(date);
+      }
+      const sources = connections.calendars();
+      await Promise.all(
+        accounts.map(async (account) => {
+          const source = sources.get(account.id);
+          if (!source) return;
+          try {
+            const fetched = await source.fetchDay(account, date);
+            await repos.meetings.upsertMany(fetched);
+          } catch (e) {
+            // Best-effort: a provider hiccup shouldn't blank the day — whatever
+            // was already cached from a prior sync is still returned below.
+            console.warn('[calendar] fetchDay failed', account.displayName, e);
+          }
+        }),
+      );
+      return repos.meetings.listByDate(date);
     },
     harvestName(projectId, taskId) {
       if (isConfigured()) return connections.harvestName(projectId, taskId);

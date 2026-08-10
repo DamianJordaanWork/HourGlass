@@ -21,3 +21,13 @@ export const HARVEST_TOKEN_KEY = 'harvest.token';
 export function adoPatKey(connectionId: Id): string {
   return `ado.pat.${connectionId}`;
 }
+
+/** Secret-store key for a calendar account's OAuth access token. */
+export function calendarTokenKey(accountId: Id): string {
+  return `calendar.token.${accountId}`;
+}
+
+/** Secret-store key for a calendar account's OAuth refresh token. */
+export function calendarRefreshKey(accountId: Id): string {
+  return `calendar.refresh.${accountId}`;
+}

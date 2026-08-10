@@ -12,6 +12,8 @@ export interface Settings {
   readonly refreshIntervalMinutes: number;
   readonly theme: ThemePref;
   readonly harvestAccountId?: string;
+  /** The user's own Azure AD app registration Client ID (public, not a secret). */
+  readonly microsoftClientId?: string;
   readonly defaultProjectId?: HarvestProjectId;
   readonly defaultTaskId?: HarvestTaskId;
   /** Stop any running timer when a new one starts. */

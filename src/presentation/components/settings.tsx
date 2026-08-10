@@ -1,7 +1,9 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import type { Settings } from '@domain/settings/settings';
-import type { AdoConnectionView, Probe } from '@composition/container';
+import type { CalendarProvider } from '@domain/calendar/meeting';
+import type { AdoConnectionView, CalendarAccountView, Probe } from '@composition/container';
 import { useConnectionActions, useConnectionStatus } from '@presentation/hooks/use-connections';
+import { useCalendarActions, useCalendarAccounts } from '@presentation/hooks/use-calendars';
 import { useSaveSettings, useSettings } from '@presentation/hooks/use-settings';
 
 export function SettingsPane() {
@@ -10,6 +12,7 @@ export function SettingsPane() {
       <h2 className="text-lg font-semibold">Settings</h2>
       <HarvestSection />
       <AdoSection />
+      <CalendarsSection />
       <SyncSection />
       <WorkdaySection />
     </div>
@@ -196,6 +199,138 @@ function AdoSection() {
             {editing && <button className={ghostBtn} onClick={() => setForm(emptyAdo)}>Cancel</button>}
             {!editing && <ProbeBadge probe={saveAdo.data} />}
           </div>
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+// ── Calendars ────────────────────────────────────────────────────────────
+const emptyCalendar = {
+  id: undefined as string | undefined,
+  provider: 'Microsoft' as CalendarProvider,
+  displayName: '',
+  icsUrl: '',
+  clientId: '',
+};
+
+function CalendarsSection() {
+  const { data: settings } = useSettings();
+  const { data: accounts } = useCalendarAccounts();
+  const { saveCalendar, deleteCalendar, connectMicrosoft } = useCalendarActions();
+  const [form, setForm] = useState(emptyCalendar);
+  const editing = form.id !== undefined;
+
+  useEffect(() => {
+    if (settings?.microsoftClientId && !form.clientId) set({ clientId: settings.microsoftClientId });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settings?.microsoftClientId]);
+
+  const set = (patch: Partial<typeof form>) => setForm((f) => ({ ...f, ...patch }));
+
+  const startEdit = (a: CalendarAccountView) =>
+    setForm({ id: a.id, provider: a.provider, displayName: a.displayName, icsUrl: a.icsUrl ?? '', clientId: settings?.microsoftClientId ?? '' });
+
+  const toggleEnabled = (a: CalendarAccountView) =>
+    saveCalendar.mutate({ id: a.id, provider: a.provider, displayName: a.displayName, icsUrl: a.icsUrl, enabled: !a.enabled });
+
+  const submitIcs = () => {
+    saveCalendar.mutate(
+      { id: form.id, provider: 'Ics', displayName: form.displayName || 'ICS calendar', icsUrl: form.icsUrl, enabled: true },
+      { onSuccess: () => setForm(emptyCalendar) },
+    );
+  };
+
+  const connect = () => {
+    connectMicrosoft.mutate(
+      { clientId: form.clientId, existingId: form.id },
+      { onSuccess: () => setForm(emptyCalendar) },
+    );
+  };
+
+  return (
+    <Card title="Calendars" subtitle="Meetings for the selected day are pulled from these accounts.">
+      {!!accounts?.length && (
+        <ul className="flex flex-col gap-2">
+          {accounts.map((a) => (
+            <li key={a.id} className="flex items-center gap-3 rounded-lg border border-hairline bg-canvas px-3 py-2">
+              <button
+                onClick={() => toggleEnabled(a)}
+                className={'h-4 w-7 shrink-0 rounded-full transition-colors ' + (a.enabled ? 'bg-primary' : 'bg-elevated')}
+                aria-label={a.enabled ? 'Disable' : 'Enable'}
+                title={a.enabled ? 'Enabled' : 'Disabled'}
+              >
+                <span className={'block h-3 w-3 rounded-full bg-surface transition-transform ' + (a.enabled ? 'translate-x-3.5' : 'translate-x-0.5')} />
+              </button>
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-sm font-medium text-ink">{a.displayName}</div>
+                <div className="truncate text-xs text-muted">{a.provider}{a.email ? ` · ${a.email}` : ''}</div>
+              </div>
+              <ProbeBadge probe={a.probe} />
+              <button onClick={() => startEdit(a)} className="rounded-md border border-hairline px-2 py-1 text-xs text-muted hover:text-ink">Edit</button>
+              <button onClick={() => deleteCalendar.mutate(a.id)} className="rounded-md border border-hairline px-2 py-1 text-xs text-muted hover:text-danger" aria-label="Remove">✕</button>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <div className="rounded-lg border border-dashed border-hairline p-3">
+        <div className="mb-2 text-xs font-medium text-muted">{editing ? 'Edit account' : 'Add account'}</div>
+        <div className="flex flex-col gap-3">
+          {!editing && (
+            <Field label="Provider">
+              <div className="flex gap-2">
+                {(['Microsoft', 'Ics'] as CalendarProvider[]).map((p) => (
+                  <button
+                    key={p}
+                    onClick={() => set({ provider: p })}
+                    className={
+                      'rounded-lg border px-3 py-1.5 text-sm font-medium ' +
+                      (form.provider === p ? 'border-primary bg-primary-soft text-primary-soft-text' : 'border-hairline text-muted hover:text-ink')
+                    }
+                  >
+                    {p === 'Microsoft' ? 'Microsoft (Outlook)' : 'ICS URL'}
+                  </button>
+                ))}
+              </div>
+            </Field>
+          )}
+
+          {form.provider === 'Ics' ? (
+            <>
+              <Field label="Display name">
+                <input className={inputCls} value={form.displayName} onChange={(e) => set({ displayName: e.target.value })} placeholder="e.g. Work (Outlook)" />
+              </Field>
+              <Field label="ICS URL">
+                <input className={inputCls} value={form.icsUrl} onChange={(e) => set({ icsUrl: e.target.value })} placeholder="https://outlook.office365.com/owa/calendar/.../calendar.ics" />
+              </Field>
+              <div className="flex items-center gap-3">
+                <button className={primaryBtn} onClick={submitIcs} disabled={saveCalendar.isPending || !form.icsUrl.trim()}>
+                  {saveCalendar.isPending ? 'Saving…' : editing ? 'Update & test' : 'Add & test'}
+                </button>
+                {editing && <button className={ghostBtn} onClick={() => setForm(emptyCalendar)}>Cancel</button>}
+                <ProbeBadge probe={saveCalendar.data} />
+              </div>
+            </>
+          ) : (
+            <>
+              <Field label="Azure AD app Client ID">
+                <input className={inputCls} value={form.clientId} onChange={(e) => set({ clientId: e.target.value })} placeholder="Client ID from your Azure AD app registration" />
+              </Field>
+              <p className="text-xs text-muted">
+                Register a public-client app in Azure AD (portal.azure.com → App registrations) with redirect URI{' '}
+                <code className="text-[11px]">{window.location.origin}/?oauth=callback</code> and delegated permission{' '}
+                <code className="text-[11px]">Calendars.Read</code> (+ <code className="text-[11px]">offline_access</code>).
+              </p>
+              <div className="flex items-center gap-3">
+                <button className={primaryBtn} onClick={connect} disabled={connectMicrosoft.isPending || !form.clientId.trim()}>
+                  {connectMicrosoft.isPending ? 'Connecting…' : 'Connect with Microsoft'}
+                </button>
+                {editing && <button className={ghostBtn} onClick={() => setForm(emptyCalendar)}>Cancel</button>}
+                <ProbeBadge probe={connectMicrosoft.data} />
+              </div>
+            </>
+          )}
         </div>
       </div>
     </Card>

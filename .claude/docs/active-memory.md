@@ -2,7 +2,13 @@
 
 _Update this after every work chunk. Newest status at top._
 
-## Current phase: **Harvest-link invariant enforced end-to-end (domain + UI); metadata opt-in; entries fully manageable. Next: calendar OAuth, SQLite, packaging**
+## Current phase: **Calendar providers (ICS + Microsoft Graph OAuth) built and wired end-to-end. Next: real ICS URL / Azure AD app registration verification, SQLite, packaging**
+
+## Snapshot (2026-08-03 session 4 — calendar provider + OAuth integration, ADR-011)
+- **Built the full calendar pillar** per `plan-the-calendar-provider-zippy-dove.md`: `IcsCalendarSource` (new `ical.js` dep, recurrence expansion via `event.iterator()`/`getOccurrenceDetails`), `MicrosoftGraphCalendarSource` (`/me/calendarView`, resolver-callback shape), `WebRedirectOAuthService` + `pkce.ts` (PKCE via Web Crypto, popup + `postMessage`, no Tauri dependency — ships forward for desktop too) + `oauth-callback.tsx` (rendered by `App.tsx` on `?oauth=callback`). See ADR-011 for full wiring (`ConnectionManager.calendars()`/`saveCalendarAccount`/`connectMicrosoftAccount`/`probeCalendarAccount`, `container.listMeetings` real sync, `CalendarsSection` in Settings, all-day meetings hidden from one-click Start).
+- **Verified in-browser** against the live Harvest connection (regression clean, no console errors): added + probed + edited + removed a test ICS calendar account end-to-end (probe correctly reports "Failed · Failed to fetch" for a non-CORS-open test host — expected, not a bug); Microsoft provider picker + Client ID field + "Connect with Microsoft" button render correctly with the right redirect URI (`http://localhost:1420/?oauth=callback`) in the helper text; Meetings tab shows the correct empty state when no calendar account is configured; existing Harvest/ADO Connected badge, Continue/Edit, Start all unaffected.
+- **Not yet verified live** (needs the user): (1) a real published Outlook/Google ICS URL — CORS behavior varies by host, add to `DEV_PROXY_REWRITES`/`vite.config.ts` if a specific host 403s direct fetch; (2) the actual Azure AD app registration + full Graph OAuth round-trip (`agile-bridge` tenant may restrict self-service registration or require admin consent for `Calendars.Read` — flagged in the plan as a blocker to check first).
+- 67 tests (10 new: `pkce.test.ts`, `ics-calendar-source.test.ts`, `microsoft-graph-calendar-source.test.ts`, `connection-manager.test.ts` calendar additions) + typecheck + build green.
 
 ## Snapshot (2026-08-03 session 3h — block un-linkable entries, end to end)
 - **Domain guard:** `TrackingService.startTracking`/`logManualTime`/`updateInterval` throw `UnmappedEntryError` (new `domain/errors.ts`) when project+task is missing or partial. Covered by a dedicated test (blank, partial, and a simulated legacy-unmapped entry that can't be re-saved without adding a mapping).
@@ -67,7 +73,7 @@ _Update this after every work chunk. Newest status at top._
 ## Remaining to make it "real" (next sessions, roughly in order)
 1. **Settings + Connections UI**: enter Harvest PAT + account id; add ADO connection(s); manage calendars. Persist creds to keychain (desktop) — currently no Settings UI.
 2. **Wire real adapters in `composition/container.ts`**: build `HttpTransport` (Tauri HTTP plugin desktop / proxy web), `HarvestClient`, `AzureDevOpsClient` from configured connections; replace demo `listWorkItems`/`listMeetings`. Clients + tracking already support this.
-3. **Calendar providers (task #10)**: `MicrosoftGraphCalendarClient`, `GoogleCalendarClient`, `IcsCalendarClient` (map to `Meeting`), + `OAuthService` PKCE loopback (`tauri-plugin-oauth`). Needs Tauri runtime; add plugin to `src-tauri`.
+3. ✅ **Calendar providers (task #10)** — done (session 4, ADR-011): ICS + Microsoft Graph, web-popup PKCE OAuth (no Tauri runtime needed after all — ships forward for desktop). Google deferred (same port shape). Real-world verification (Azure AD app registration, a real ICS URL) still needed from the user.
 4. **Template-management UI**: CRUD for `mapping_rule` + `quick_template` (engine + repos already done/tested).
 5. **SQLite/Tauri-sql repo backend**: swap `local-repositories` impl behind same ports (add `@tauri-apps/plugin-sql`, schema, migrations).
 6. **Tauri plugins + packaging**: add sql/http/oauth/stronghold to `src-tauri/Cargo.toml` + capabilities; `tauri build`. hg1 encryption option; ADO Harvest-GUID auto-learn.

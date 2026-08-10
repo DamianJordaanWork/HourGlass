@@ -152,9 +152,15 @@ function MeetingCard({ meeting: m }: { meeting: Meeting }) {
             → {mapping.projectName ?? 'Mapped'}{mapping.taskName ? ` / ${mapping.taskName}` : ''}
           </span>
         )}
-        <button onClick={log} className="rounded-md border border-hairline px-2.5 py-1.5 text-xs font-medium text-muted hover:text-ink">Log</button>
-        <span className="ml-auto" />
-        <StartButton onClick={start} />
+        {m.isAllDay ? (
+          <span className="ml-auto rounded bg-elevated px-1.5 py-0.5 text-[10px] text-muted">All-day — no one-click start</span>
+        ) : (
+          <>
+            <button onClick={log} className="rounded-md border border-hairline px-2.5 py-1.5 text-xs font-medium text-muted hover:text-ink">Log</button>
+            <span className="ml-auto" />
+            <StartButton onClick={start} />
+          </>
+        )}
       </div>
     </div>
   );

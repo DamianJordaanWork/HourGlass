@@ -1,20 +1,35 @@
-import type { Id } from '@domain/common/types';
+import type { Id, IsoDate } from '@domain/common/types';
 import type {
   IAdoConnectionRepository,
   IAzureDevOpsClient,
+  ICalendarAccountRepository,
+  ICalendarSource,
   IHarvestClient,
   IHttpTransport,
+  IOAuthService,
   ISecretStore,
   ISettingsRepository,
 } from '@domain/ports';
 import type { HarvestProject } from '@domain/harvest/harvest-types';
 import type { AdoConnection } from '@domain/connections/connection';
-import { HARVEST_TOKEN_KEY, adoPatKey } from '@domain/connections/connection';
+import type { CalendarAccount, CalendarProvider, Meeting } from '@domain/calendar/meeting';
+import {
+  HARVEST_TOKEN_KEY,
+  adoPatKey,
+  calendarRefreshKey,
+  calendarTokenKey,
+} from '@domain/connections/connection';
 import { HarvestClient } from '@infrastructure/harvest/harvest-client';
 import {
   AzureDevOpsClient,
   type AdoConnectionResolver,
 } from '@infrastructure/ado/ado-client';
+import { IcsCalendarSource } from '@infrastructure/calendar/ics-calendar-source';
+import { MicrosoftGraphCalendarSource } from '@infrastructure/calendar/microsoft-graph-calendar-source';
+
+const GRAPH_SCOPES = ['Calendars.Read', 'offline_access', 'openid', 'profile'];
+const MS_AUTHORIZE_URL = 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize';
+const MS_TOKEN_URL = 'https://login.microsoftonline.com/common/oauth2/v2.0/token';
 
 /** Result of testing a connection's credentials. */
 export type Probe =
@@ -45,11 +60,25 @@ export interface AdoConnectionInput {
   readonly enabled: boolean;
 }
 
+export interface CalendarAccountView extends CalendarAccount {
+  readonly probe: Probe;
+}
+
+export interface CalendarAccountInput {
+  readonly id?: Id;
+  readonly provider: CalendarProvider;
+  readonly displayName: string;
+  readonly icsUrl?: string;
+  readonly enabled: boolean;
+}
+
 interface Deps {
   readonly settings: ISettingsRepository;
   readonly adoConnections: IAdoConnectionRepository;
+  readonly calendarAccounts: ICalendarAccountRepository;
   readonly secrets: ISecretStore;
   readonly transport: IHttpTransport;
+  readonly oauth: IOAuthService;
   readonly newId: () => Id;
 }
 
@@ -65,8 +94,15 @@ export class ConnectionManager {
   private liveAdo?: IAzureDevOpsClient;
   private harvestProjects: HarvestProject[] = [];
   private harvestProbe: Probe = { state: 'idle' };
+  private readonly icsSource: IcsCalendarSource;
+  private readonly graphSource: MicrosoftGraphCalendarSource;
+  private calendarSourceMap = new Map<Id, ICalendarSource>();
+  private calendarProbes = new Map<Id, Probe>();
 
-  constructor(private readonly deps: Deps) {}
+  constructor(private readonly deps: Deps) {
+    this.icsSource = new IcsCalendarSource(deps.transport);
+    this.graphSource = new MicrosoftGraphCalendarSource(deps.transport, this.graphTokenResolver);
+  }
 
   // ── live client accessors (passed to TrackingService as providers) ────────
   harvest(): IHarvestClient | undefined {
@@ -74,6 +110,10 @@ export class ConnectionManager {
   }
   ado(): IAzureDevOpsClient | undefined {
     return this.liveAdo;
+  }
+  /** Enabled calendar accounts → the shared `ICalendarSource` instance to fetch them with. */
+  calendars(): Map<Id, ICalendarSource> {
+    return new Map(this.calendarSourceMap);
   }
   /** True when at least one real client is active (i.e. not pure demo mode). */
   configured(): boolean {
@@ -119,6 +159,15 @@ export class ConnectionManager {
     const connections = await this.deps.adoConnections.list();
     const anyUsable = await this.hasUsableAdoConnection(connections);
     this.liveAdo = anyUsable ? new AzureDevOpsClient(this.deps.transport, this.adoResolver) : undefined;
+
+    // Calendars — a shared source per provider; each enabled account maps to it.
+    const calendarAccounts = await this.deps.calendarAccounts.list();
+    const map = new Map<Id, ICalendarSource>();
+    for (const account of calendarAccounts) {
+      if (!account.enabled) continue;
+      map.set(account.id, account.provider === 'Ics' ? this.icsSource : this.graphSource);
+    }
+    this.calendarSourceMap = map;
   }
 
   // ── Harvest config ────────────────────────────────────────────────────────
@@ -186,6 +235,65 @@ export class ConnectionManager {
     await this.reconfigure();
   }
 
+  // ── Calendar accounts ────────────────────────────────────────────────────
+  async listCalendars(): Promise<CalendarAccountView[]> {
+    const accounts = await this.deps.calendarAccounts.list();
+    return accounts.map((a) => ({ ...a, probe: this.calendarProbes.get(a.id) ?? { state: 'idle' } }));
+  }
+
+  /** Upsert an ICS calendar account, reconfigure, then probe it. */
+  async saveCalendarAccount(input: CalendarAccountInput): Promise<Probe> {
+    const id = input.id ?? this.deps.newId();
+    const account: CalendarAccount = {
+      id,
+      provider: input.provider,
+      displayName: input.displayName.trim(),
+      icsUrl: input.icsUrl?.trim() || undefined,
+      enabled: input.enabled,
+    };
+    await this.deps.calendarAccounts.upsert(account);
+    await this.reconfigure();
+    return this.probeCalendarAccount(id);
+  }
+
+  async deleteCalendarAccount(id: Id): Promise<void> {
+    await this.deps.calendarAccounts.delete(id);
+    await this.deps.secrets.delete(calendarTokenKey(id));
+    await this.deps.secrets.delete(calendarRefreshKey(id));
+    this.calendarProbes.delete(id);
+    await this.reconfigure();
+  }
+
+  /**
+   * Runs the interactive Microsoft OAuth popup flow, persists the resulting
+   * tokens, and upserts a `Microsoft`-provider calendar account (adopting an
+   * existing account with `existingId` when re-connecting/re-authorizing).
+   */
+  async connectMicrosoftAccount(clientId: string, existingId?: Id): Promise<Probe> {
+    const settings = await this.deps.settings.get();
+    if (settings.microsoftClientId !== clientId.trim()) {
+      await this.deps.settings.save({ ...settings, microsoftClientId: clientId.trim() });
+    }
+
+    const tokens = await this.deps.oauth.authorize(this.msOAuthConfig(clientId));
+    const id = existingId ?? this.deps.newId();
+    await this.deps.secrets.set(calendarTokenKey(id), tokens.accessToken);
+    if (tokens.refreshToken) await this.deps.secrets.set(calendarRefreshKey(id), tokens.refreshToken);
+
+    const profile = await this.fetchGraphProfile(tokens.accessToken);
+    const existing = (await this.deps.calendarAccounts.list()).find((a) => a.id === id);
+    const account: CalendarAccount = {
+      id,
+      provider: 'Microsoft',
+      displayName: profile.displayName ?? existing?.displayName ?? 'Microsoft Calendar',
+      email: profile.email ?? existing?.email,
+      enabled: true,
+    };
+    await this.deps.calendarAccounts.upsert(account);
+    await this.reconfigure();
+    return this.probeCalendarAccount(id);
+  }
+
   // ── probes ────────────────────────────────────────────────────────────────
   async probeHarvest(): Promise<Probe> {
     if (!this.liveHarvest) return { state: 'idle' };
@@ -213,7 +321,61 @@ export class ConnectionManager {
     }
   }
 
+  async probeCalendarAccount(id: Id): Promise<Probe> {
+    const source = this.calendarSourceMap.get(id);
+    const accounts = await this.deps.calendarAccounts.list();
+    const account = accounts.find((a) => a.id === id);
+    if (!source || !account) {
+      const probe: Probe = { state: 'idle' };
+      this.calendarProbes.set(id, probe);
+      return probe;
+    }
+    try {
+      const today = new Date().toISOString().slice(0, 10) as IsoDate;
+      const meetings: Meeting[] = await source.fetchDay(account, today);
+      const probe: Probe = { state: 'ok', detail: `${meetings.length} event(s) today` };
+      this.calendarProbes.set(id, probe);
+      return probe;
+    } catch (e) {
+      const probe: Probe = { state: 'error', error: errMsg(e) };
+      this.calendarProbes.set(id, probe);
+      return probe;
+    }
+  }
+
   // ── helpers ────────────────────────────────────────────────────────────
+  private readonly graphTokenResolver = async (accountId: Id) => {
+    const accessToken = await this.deps.secrets.get(calendarTokenKey(accountId));
+    return accessToken ? { accessToken } : null;
+  };
+
+  private msOAuthConfig(clientId: string) {
+    return {
+      provider: 'Microsoft' as const,
+      clientId: clientId.trim(),
+      scopes: GRAPH_SCOPES,
+      authorizeUrl: MS_AUTHORIZE_URL,
+      tokenUrl: MS_TOKEN_URL,
+      redirectUri: `${window.location.origin}/?oauth=callback`,
+      extraAuthParams: { response_mode: 'query' },
+    };
+  }
+
+  private async fetchGraphProfile(accessToken: string): Promise<{ displayName?: string; email?: string }> {
+    try {
+      const res = await this.deps.transport.send({
+        method: 'GET',
+        url: 'https://graph.microsoft.com/v1.0/me',
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      if (res.status < 200 || res.status >= 300) return {};
+      const dto = JSON.parse(res.body) as { displayName?: string; mail?: string; userPrincipalName?: string };
+      return { displayName: dto.displayName, email: dto.mail ?? dto.userPrincipalName };
+    } catch {
+      return {};
+    }
+  }
+
   private readonly adoResolver: AdoConnectionResolver = async (connectionId) => {
     const connection = await this.deps.adoConnections.get(connectionId);
     if (!connection) return null;

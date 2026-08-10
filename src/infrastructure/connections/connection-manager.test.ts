@@ -4,21 +4,37 @@ import { createLocalRepositories } from '@infrastructure/persistence/local-repos
 import { MemoryStorage } from '@infrastructure/persistence/local-store';
 import { LocalSecretStore } from '@infrastructure/secrets/local-secret-store';
 import { FakeTransport } from '@test/fake-transport';
-import { HARVEST_TOKEN_KEY, adoPatKey } from '@domain/connections/connection';
+import { HARVEST_TOKEN_KEY, adoPatKey, calendarTokenKey } from '@domain/connections/connection';
+import type { IOAuthService, OAuthConfig, TokenSet } from '@domain/ports';
+
+class FakeOAuthService implements IOAuthService {
+  authorized?: OAuthConfig;
+  tokens: TokenSet = { accessToken: 'graph-access-token', refreshToken: 'graph-refresh-token', expiresAt: Date.now() + 3600_000 };
+  async authorize(config: OAuthConfig): Promise<TokenSet> {
+    this.authorized = config;
+    return this.tokens;
+  }
+  async refresh(): Promise<TokenSet> {
+    return this.tokens;
+  }
+}
 
 function make(transport = new FakeTransport()) {
   const storage = new MemoryStorage();
   const repos = createLocalRepositories(storage);
   const secrets = new LocalSecretStore(storage);
+  const oauth = new FakeOAuthService();
   let n = 0;
   const manager = new ConnectionManager({
     settings: repos.settings,
     adoConnections: repos.adoConnections,
+    calendarAccounts: repos.calendarAccounts,
     secrets,
     transport,
+    oauth,
     newId: () => `conn-${++n}`,
   });
-  return { manager, repos, secrets, transport };
+  return { manager, repos, secrets, transport, oauth };
 }
 
 const HARVEST_ASSIGNMENTS = {
@@ -118,5 +134,52 @@ describe('ConnectionManager', () => {
     expect(await ctx.manager.listAdo()).toHaveLength(0);
     expect(ctx.manager.ado()).toBeUndefined();
     expect(await ctx.secrets.get(adoPatKey(conn!.id))).toBeNull();
+  });
+
+  it('saves an ICS calendar account and makes it live via calendars()', async () => {
+    ctx.transport.on('GET', 'example.com/cal.ics', 'BEGIN:VCALENDAR\r\nVERSION:2.0\r\nEND:VCALENDAR\r\n');
+
+    const probe = await ctx.manager.saveCalendarAccount({
+      provider: 'Ics',
+      displayName: 'Work',
+      icsUrl: 'https://example.com/cal.ics',
+      enabled: true,
+    });
+
+    expect(probe).toEqual({ state: 'ok', detail: '0 event(s) today' });
+    const [account] = await ctx.manager.listCalendars();
+    expect(account!.enabled).toBe(true);
+    expect(account!.probe.state).toBe('ok');
+    expect(ctx.manager.calendars().get(account!.id)).toBeDefined();
+  });
+
+  it('connects a Microsoft calendar account via OAuth, stores tokens, and probes it', async () => {
+    ctx.transport
+      .on('GET', '/calendarView', { value: [] })
+      .on('GET', '/v1.0/me', { displayName: 'Damian Jordaan', mail: 'damianj@agilebridge.co.za' });
+
+    const probe = await ctx.manager.connectMicrosoftAccount('client-abc');
+
+    expect(probe).toEqual({ state: 'ok', detail: '0 event(s) today' });
+    expect(ctx.oauth.authorized?.clientId).toBe('client-abc');
+    const [account] = await ctx.manager.listCalendars();
+    expect(account!.provider).toBe('Microsoft');
+    expect(account!.displayName).toBe('Damian Jordaan');
+    expect(account!.email).toBe('damianj@agilebridge.co.za');
+    expect(await ctx.secrets.get(calendarTokenKey(account!.id))).toBe('graph-access-token');
+    expect(ctx.manager.calendars().get(account!.id)).toBeDefined();
+    expect((await ctx.manager.getHarvestConfig()).accountId).toBe(''); // unrelated config untouched
+  });
+
+  it('deleteCalendarAccount removes the account and its tokens', async () => {
+    ctx.transport.on('GET', '/calendarView', { value: [] }).on('GET', '/v1.0/me', {});
+    await ctx.manager.connectMicrosoftAccount('client-abc');
+    const [account] = await ctx.manager.listCalendars();
+
+    await ctx.manager.deleteCalendarAccount(account!.id);
+
+    expect(await ctx.manager.listCalendars()).toHaveLength(0);
+    expect(ctx.manager.calendars().size).toBe(0);
+    expect(await ctx.secrets.get(calendarTokenKey(account!.id))).toBeNull();
   });
 });

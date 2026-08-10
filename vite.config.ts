@@ -39,6 +39,11 @@ export default defineConfig({
         changeOrigin: true,
         rewrite: (p) => p.replace(/^\/__ado/, ''),
       },
+      '/__graph': {
+        target: 'https://graph.microsoft.com',
+        changeOrigin: true,
+        rewrite: (p) => p.replace(/^\/__graph/, ''),
+      },
     },
     watch: {
       ignored: [

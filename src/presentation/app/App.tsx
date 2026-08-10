@@ -10,11 +10,13 @@ import { NotesPane } from '@presentation/components/notes';
 import { TemplatesPane } from '@presentation/components/templates';
 import { SettingsPane } from '@presentation/components/settings';
 import { EntryModal } from '@presentation/components/entry-modal';
+import { OAuthCallback, isOAuthCallback } from '@presentation/components/oauth-callback';
 import { useConnectionStatus } from '@presentation/hooks/use-connections';
 import { useEntryModalStore } from '@presentation/state/entry-modal';
 import { useSelectedDay } from '@presentation/state/selected-day';
 
 export function App() {
+  if (isOAuthCallback()) return <OAuthCallback />;
   return (
     <ContainerProvider>
       <Shell />
