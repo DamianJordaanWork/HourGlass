@@ -9,6 +9,8 @@ import type {
 import type { ExternalReference, HarvestTimeEntry } from '@domain/harvest/harvest-types';
 import { durationHours, type TimeInterval, type WorkItemRef } from '@domain/time/time-interval';
 import { Hg1, type Hg1Payload } from '@domain/harvest/hg1-metadata';
+import { codecFor } from '@domain/harvest/hg1-codec-registry';
+import type { Hg1Scheme } from '@domain/harvest/hg1-codec';
 import { UnmappedEntryError } from '@domain/errors';
 
 export interface StartInput {
@@ -275,8 +277,8 @@ export class TrackingService {
     if (round2(hours) <= 0) {
       return interval;
     }
-    const { embedMetadata: embed } = await this.deps.settings.get();
-    const notes = embedMetadata(interval, embed);
+    const { embedMetadata: embed, hg1Scheme } = await this.deps.settings.get();
+    const notes = embedMetadata(interval, embed, hg1Scheme);
     const externalReference = interval.workItemRef ? refFor(interval.workItemRef) : undefined;
 
     let harvestTimeEntryId = interval.harvestTimeEntryId;
@@ -337,11 +339,11 @@ function definedOnly<T extends object>(patch: T): Partial<T> {
  * source). Always strips any stale block first, so turning the setting off (or
  * editing) cleans the note.
  */
-function embedMetadata(interval: TimeInterval, enabled: boolean): string {
+function embedMetadata(interval: TimeInterval, enabled: boolean, scheme: Hg1Scheme): string {
   const worthEmbedding = enabled && (interval.templateId !== undefined || interval.source !== 'Manual');
   if (!worthEmbedding) return Hg1.strip(interval.notes);
   const payload: Hg1Payload = { v: 1, source: interval.source, templateId: interval.templateId };
-  return Hg1.embed(interval.notes, payload);
+  return Hg1.embed(interval.notes, payload, codecFor(scheme));
 }
 
 /** Harvest native external reference for an ADO work item (guid auto-learn is Phase 2). */

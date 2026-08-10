@@ -43,6 +43,14 @@ _Update this after every work chunk. Newest status at top._
 - **Confirmed working:** user logged a real entry that shows "TFN Project Development | CRT Team · Development"; ADO work items map to real Harvest projects via user-authored rules. 54 tests + typecheck + build green.
 - **Known gaps:** external (Harvest-only) entries are read-only — no edit/adopt yet. Manual/edit modal keeps original `start` and sets `end = start + duration` (no explicit start-time field yet).
 
+## Snapshot (2026-08-11 — F1: hg1 codec tests + pluggable encoding, ADR-012)
+- **F1 done.** hg1 fenced-block body encoding is now pluggable behind a sync domain `Hg1Codec` port, with the body self-describing its scheme via a `<letter><digit>:` prefix (unprefixed = `plain`, byte-for-byte identical to the old format — no migration, existing tags decode unchanged). New: `domain/harvest/hg1-codec.ts` (`Hg1Codec`, `Hg1Scheme`, `Hg1CodecUnavailableError`), `plain-hg1-codec.ts` (default; hosts the base64url helpers moved out of `hg1-metadata.ts`), `scramble-hg1-codec.ts` (keyless reversible XOR+base64url, `s1:` prefix), `hg1-codec-registry.ts` (`codecFor`/`codecForBody`). `hg1-metadata.ts` `encode`/`embed` take an optional codec (default plain); `extract` auto-detects per-body via `codecForBody`. `Settings.hg1Scheme: Hg1Scheme` added, default `'plain'`; `TrackingService.pushToHarvest` reads it alongside `embedMetadata` and resolves the codec. `aes` (`a1:`) is reserved in the type but **not implemented** — `codecFor('aes')` throws; real encryption needs `ISecretStore` (async), which doesn't fit the domain's pure/sync layer, so it'll need an infra wrapper later. See ADR-012.
+- **Tests:** co-located `hg1-metadata.test.ts`, `plain-hg1-codec.test.ts`, `scramble-hg1-codec.test.ts` under `src/domain/harvest/`; the duplicate `describe('Hg1 metadata codec')` block was removed from `src/domain/services/services.test.ts`. Suite: **91 tests passing** (was 67), typecheck green.
+- **Open questions (not decided, flagged for a future session):**
+  1. AES key provenance — per-install key pulled from `ISecretStore` vs a user-supplied passphrase (affects UX and whether the key travels with a backup/restore).
+  2. AES portability tradeoff — an AES-encrypted hg1 tag isn't decodable on a fresh install without the same key, which cuts against hg1's own stated recovery/portability purpose (ADR-009's rationale for embedding metadata at all). Needs a product call on whether that's acceptable or whether `aes` should always ship a companion recovery path.
+  3. Whether to expose `scramble` in the Settings UI now, or leave `hg1Scheme` DB-only/`plain`-only until there's a real reason (e.g. a user asking not to have plaintext-ish tags visible) to surface it.
+
 ## (superseded) Current phase note — Harvest + ADO LIVE via dev proxy; push path proven.
 
 ## Snapshot (2026-08-03 session 3c — root-caused "time doesn't reach Harvest")

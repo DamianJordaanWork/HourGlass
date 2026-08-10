@@ -2,7 +2,6 @@ import { describe, it, expect } from 'vitest';
 import { IntervalAggregator } from './interval-aggregator';
 import { DeadTimeCalculator } from './dead-time-calculator';
 import { WeeklyGoalCalculator } from './weekly-goal-calculator';
-import { Hg1, type Hg1Payload } from '@domain/harvest/hg1-metadata';
 import type { TimeInterval } from '@domain/time/time-interval';
 
 function interval(p: Partial<TimeInterval> & { start: string; end?: string }): TimeInterval {
@@ -96,39 +95,5 @@ describe('WeeklyGoalCalculator', () => {
     expect(WeeklyGoalCalculator.progress(4, 8)).toBe(0.5);
     expect(WeeklyGoalCalculator.progress(10, 8)).toBe(1);
     expect(WeeklyGoalCalculator.isOver(9, 8)).toBe(true);
-  });
-});
-
-describe('Hg1 metadata codec', () => {
-  const payload: Hg1Payload = {
-    v: 1,
-    source: 'WorkItem',
-    templateId: 'tpl-9',
-  };
-
-  it('round-trips through embed/extract and hides from the note body', () => {
-    const notes = 'Investigating the login bug';
-    const embedded = Hg1.embed(notes, payload);
-    expect(embedded).toContain('```hg1');
-    expect(Hg1.strip(embedded)).toBe(notes);
-    expect(Hg1.extract(embedded)).toEqual(payload);
-  });
-
-  it('replaces an existing block instead of stacking', () => {
-    const once = Hg1.embed('note', payload);
-    const twice = Hg1.embed(once, { ...payload, source: 'Meeting' });
-    expect((twice.match(/```hg1/g) ?? []).length).toBe(1);
-    expect(Hg1.extract(twice)?.source).toBe('Meeting');
-  });
-
-  it('returns null when absent or corrupt', () => {
-    expect(Hg1.extract('just notes')).toBeNull();
-    expect(Hg1.extract('```hg1\n!!!notbase64!!!\n```')).toBeNull();
-  });
-
-  it('handles empty user notes', () => {
-    const embedded = Hg1.embed('', payload);
-    expect(Hg1.strip(embedded)).toBe('');
-    expect(Hg1.extract(embedded)).toEqual(payload);
   });
 });

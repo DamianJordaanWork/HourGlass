@@ -1,4 +1,5 @@
 import type { HarvestProjectId, HarvestTaskId } from '@domain/common/types';
+import type { Hg1Scheme } from '@domain/harvest/hg1-codec';
 
 export type ThemePref = 'system' | 'light' | 'dark';
 
@@ -22,6 +23,13 @@ export interface Settings {
   readonly aggregateSameTaskPerDay: boolean;
   /** Embed the hidden `hg1` reconciliation tag in Harvest notes. Off by default. */
   readonly embedMetadata: boolean;
+  /**
+   * The hg1 tag's body encoding, only consulted when `embedMetadata` is on.
+   * `plain` (default) keeps pre-existing tags on other entries decodable and
+   * requires no key. `scramble` is a keyless, reversible obfuscation. `aes` is
+   * reserved for a future real-encryption scheme and is not yet available.
+   */
+  readonly hg1Scheme: Hg1Scheme;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -35,4 +43,5 @@ export const DEFAULT_SETTINGS: Settings = {
   autoStopOnSwitch: true,
   aggregateSameTaskPerDay: false,
   embedMetadata: false,
+  hg1Scheme: 'plain',
 };
