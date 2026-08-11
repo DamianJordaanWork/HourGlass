@@ -12,6 +12,7 @@ import { Hg1, type Hg1Payload } from '@domain/harvest/hg1-metadata';
 import { codecFor } from '@domain/harvest/hg1-codec-registry';
 import type { Hg1Scheme } from '@domain/harvest/hg1-codec';
 import { UnmappedEntryError } from '@domain/errors';
+import { resolveRollup, sumSyncedHours } from '@domain/services/rollup';
 
 export interface StartInput {
   readonly date: IsoDate;
@@ -257,9 +258,30 @@ export class TrackingService {
     const harvest = this.deps.harvest?.();
     if (existing?.harvestTimeEntryId && harvest) {
       try {
-        await harvest.deleteTimeEntry(existing.harvestTimeEntryId);
+        const remaining = (await this.deps.intervals.listByDate(existing.date)).filter(
+          (i) => i.harvestTimeEntryId === existing.harvestTimeEntryId,
+        );
+        if (remaining.length === 0) {
+          await harvest.deleteTimeEntry(existing.harvestTimeEntryId);
+        } else {
+          await harvest.updateTimeEntry(existing.harvestTimeEntryId, {
+            hours: round2(sumSyncedHours(remaining)),
+          });
+        }
       } catch (e) {
         this.warn(`Harvest delete failed: ${errMsg(e)}`);
+      }
+    }
+    const ado = this.deps.ado?.();
+    if (ado && existing?.workItemRef && existing.syncedHours) {
+      try {
+        await ado.syncCompletedWork(
+          existing.workItemRef.connectionId,
+          existing.workItemRef.workItemId,
+          round2(-existing.syncedHours),
+        );
+      } catch (e) {
+        this.warn(`ADO CompletedWork sync failed: ${errMsg(e)}`);
       }
     }
   }
@@ -277,20 +299,29 @@ export class TrackingService {
     if (round2(hours) <= 0) {
       return interval;
     }
-    const { embedMetadata: embed, hg1Scheme } = await this.deps.settings.get();
+    const { embedMetadata: embed, hg1Scheme, aggregateSameTaskPerDay } = await this.deps.settings.get();
     const notes = embedMetadata(interval, embed, hg1Scheme);
     const externalReference = interval.workItemRef ? refFor(interval.workItemRef) : undefined;
 
+    const dayIntervals = await this.deps.intervals.listByDate(interval.date);
+    const { entryId, siblingHours } = resolveRollup({
+      interval,
+      dayIntervals,
+      aggregate: aggregateSameTaskPerDay,
+    });
+    const absoluteHours = round2(siblingHours + hours);
+
     let harvestTimeEntryId = interval.harvestTimeEntryId;
     try {
-      if (harvestTimeEntryId) {
-        await harvest.updateTimeEntry(harvestTimeEntryId, { hours, notes, externalReference });
+      if (entryId !== undefined) {
+        await harvest.updateTimeEntry(entryId, { hours: absoluteHours, notes, externalReference });
+        harvestTimeEntryId = entryId;
       } else {
         const entry = await harvest.createTimeEntry({
           projectId: interval.harvestProjectId,
           taskId: interval.harvestTaskId,
           spentDate: interval.date,
-          hours,
+          hours: absoluteHours,
           notes,
           externalReference,
         });

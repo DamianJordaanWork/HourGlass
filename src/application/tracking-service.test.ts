@@ -27,6 +27,7 @@ class FakeClock implements IClock {
 class FakeHarvest implements IHarvestClient {
   created: CreateTimeEntry[] = [];
   updated: { id: number; patch: UpdateTimeEntry }[] = [];
+  deleted: number[] = [];
   private seq = 1000;
   async getProjectAssignments() {
     return [];
@@ -53,7 +54,9 @@ class FakeHarvest implements IHarvestClient {
     this.updated.push({ id, patch });
     return { id, spentDate: '', hours: patch.hours ?? 0, notes: patch.notes ?? '', projectId: 0, projectName: '', taskId: 0, taskName: '', isRunning: false };
   }
-  async deleteTimeEntry() {}
+  async deleteTimeEntry(id: number) {
+    this.deleted.push(id);
+  }
   async stopTimer(id: number): Promise<HarvestTimeEntry> {
     return { id, spentDate: '', hours: 0, notes: '', projectId: 0, projectName: '', taskId: 0, taskName: '', isRunning: false };
   }
@@ -244,5 +247,167 @@ describe('TrackingService', () => {
     const stopped = await service.stopTracking(i.id);
     expect(stopped.end).toBeDefined();
     expect(stopped.harvestTimeEntryId).toBeUndefined();
+  });
+});
+
+describe('aggregateSameTaskPerDay roll-up', () => {
+  let clock: FakeClock;
+  beforeEach(() => {
+    clock = new FakeClock(T0);
+  });
+
+  async function enableAggregation(repos: ReturnType<typeof makeService>['repos']) {
+    const current = await repos.settings.get();
+    await repos.settings.save({ ...current, aggregateSameTaskPerDay: true });
+  }
+
+  const refA = { connectionId: 'c1', workItemId: 100, workItemType: 'Task', url: 'u1' };
+  const refB = { connectionId: 'c1', workItemId: 200, workItemType: 'Task', url: 'u2' };
+
+  it('ON: second same-task/day stop patches the first Harvest entry to the cumulative sum', async () => {
+    const harvest = new FakeHarvest();
+    const { service, repos, ado } = makeService(clock, harvest);
+    await enableAggregation(repos);
+
+    const a = await service.startTracking({ date: '2026-08-03', source: 'WorkItem', harvestProjectId: 1, harvestTaskId: 2, workItemRef: refA });
+    clock.advance(3_600_000); // 1h
+    const stoppedA = await service.stopTracking(a.id);
+    expect(harvest.created).toHaveLength(1);
+    expect(harvest.created[0]!.hours).toBeCloseTo(1, 5);
+    expect(harvest.updated).toHaveLength(0);
+
+    const b = await service.startTracking({ date: '2026-08-03', source: 'WorkItem', harvestProjectId: 1, harvestTaskId: 2, workItemRef: refB });
+    clock.advance(1_800_000); // 0.5h
+    const stoppedB = await service.stopTracking(b.id);
+
+    expect(harvest.created).toHaveLength(1); // no new Harvest entry
+    expect(harvest.updated).toHaveLength(1);
+    expect(harvest.updated[0]!.id).toBe(stoppedA.harvestTimeEntryId);
+    expect(harvest.updated[0]!.patch.hours).toBeCloseTo(1.5, 5);
+    expect(stoppedB.harvestTimeEntryId).toBe(stoppedA.harvestTimeEntryId);
+    // each interval's own hours went to ADO, not the running total
+    expect(ado.calls).toEqual([
+      { id: 'c1', wi: 100, delta: 1 },
+      { id: 'c1', wi: 200, delta: 0.5 },
+    ]);
+
+    // A third stop keeps patching the same entry to the new cumulative sum.
+    const c = await service.startTracking({ date: '2026-08-03', source: 'WorkItem', harvestProjectId: 1, harvestTaskId: 2 });
+    clock.advance(900_000); // 0.25h
+    await service.stopTracking(c.id);
+    expect(harvest.created).toHaveLength(1);
+    expect(harvest.updated).toHaveLength(2);
+    expect(harvest.updated[1]!.id).toBe(stoppedA.harvestTimeEntryId);
+    expect(harvest.updated[1]!.patch.hours).toBeCloseTo(1.75, 5);
+  });
+
+  it('OFF (default): two same-task/day stops create two separate Harvest entries, never cross-updating', async () => {
+    const harvest = new FakeHarvest();
+    const { service } = makeService(clock, harvest); // aggregateSameTaskPerDay defaults to false
+
+    const a = await service.startTracking({ date: '2026-08-03', source: 'Manual', harvestProjectId: 1, harvestTaskId: 2 });
+    clock.advance(3_600_000);
+    await service.stopTracking(a.id);
+
+    const b = await service.startTracking({ date: '2026-08-03', source: 'Manual', harvestProjectId: 1, harvestTaskId: 2 });
+    clock.advance(1_800_000);
+    await service.stopTracking(b.id);
+
+    expect(harvest.created).toHaveLength(2);
+    expect(harvest.updated).toHaveLength(0); // explicit: OFF never patches a sibling's entry
+  });
+
+  it('ON: continueInterval on a member then stopping patches the sum, no new create', async () => {
+    const harvest = new FakeHarvest();
+    const { service, repos } = makeService(clock, harvest);
+    await enableAggregation(repos);
+
+    const a = await service.startTracking({ date: '2026-08-03', source: 'Manual', harvestProjectId: 1, harvestTaskId: 2 });
+    clock.advance(3_600_000); // 1h
+    const stoppedA = await service.stopTracking(a.id);
+
+    const b = await service.startTracking({ date: '2026-08-03', source: 'Manual', harvestProjectId: 1, harvestTaskId: 2 });
+    clock.advance(1_800_000); // 0.5h
+    await service.stopTracking(b.id);
+    expect(harvest.created).toHaveLength(1);
+
+    clock.advance(60_000);
+    await service.continueInterval(a.id);
+    clock.advance(600_000); // +10m on A
+    await service.stopTracking(a.id);
+
+    expect(harvest.created).toHaveLength(1); // still no new create
+    const last = harvest.updated[harvest.updated.length - 1]!;
+    expect(last.id).toBe(stoppedA.harvestTimeEntryId);
+    // A's new total (1h + 10m, rounded to 1.17) + B's 0.5h
+    expect(last.patch.hours).toBeCloseTo(1.67, 5);
+  });
+
+  it('ON: updateInterval on a member patches the recomputed sum and syncs only that member\'s ADO delta', async () => {
+    const harvest = new FakeHarvest();
+    const { service, repos, ado } = makeService(clock, harvest);
+    await enableAggregation(repos);
+
+    const a = await service.startTracking({ date: '2026-08-03', source: 'WorkItem', harvestProjectId: 1, harvestTaskId: 2, workItemRef: refA });
+    clock.advance(3_600_000); // 1h
+    const stoppedA = await service.stopTracking(a.id);
+
+    const b = await service.startTracking({ date: '2026-08-03', source: 'WorkItem', harvestProjectId: 1, harvestTaskId: 2, workItemRef: refB });
+    clock.advance(1_800_000); // 0.5h
+    const stoppedB = await service.stopTracking(b.id);
+
+    const adoCallsBefore = ado.calls.length;
+    const newEnd = new Date(new Date(stoppedB.start).getTime() + 1 * 3_600_000).toISOString(); // extend B to 1h
+    const edited = await service.updateInterval(stoppedB.id, { end: newEnd });
+
+    expect(edited.harvestTimeEntryId).toBe(stoppedA.harvestTimeEntryId);
+    expect(edited.syncedHours).toBeCloseTo(1, 5); // B's own hours only
+    const last = harvest.updated[harvest.updated.length - 1]!;
+    expect(last.id).toBe(stoppedA.harvestTimeEntryId);
+    expect(last.patch.hours).toBeCloseTo(1 + 1, 5); // A's 1h + B's new 1h
+    // ADO only gets B's own delta (+0.5h, from 0.5 -> 1), not the whole sum.
+    expect(ado.calls.length).toBe(adoCallsBefore + 1);
+    expect(ado.calls[ado.calls.length - 1]).toEqual({ id: 'c1', wi: 200, delta: 0.5 });
+  });
+
+  it('ON: deleting one member of a 2-member group patches the entry down to the survivor; deleting the survivor deletes it', async () => {
+    const harvest = new FakeHarvest();
+    const { service, repos, ado } = makeService(clock, harvest);
+    await enableAggregation(repos);
+
+    const a = await service.startTracking({ date: '2026-08-03', source: 'WorkItem', harvestProjectId: 1, harvestTaskId: 2, workItemRef: refA });
+    clock.advance(3_600_000); // 1h
+    const stoppedA = await service.stopTracking(a.id);
+
+    const b = await service.startTracking({ date: '2026-08-03', source: 'WorkItem', harvestProjectId: 1, harvestTaskId: 2, workItemRef: refB });
+    clock.advance(1_800_000); // 0.5h
+    const stoppedB = await service.stopTracking(b.id);
+
+    await service.deleteInterval(stoppedB.id);
+    // Entry patched down to the survivor's hours, not deleted.
+    const patchDown = harvest.updated[harvest.updated.length - 1]!;
+    expect(patchDown.id).toBe(stoppedA.harvestTimeEntryId);
+    expect(patchDown.patch.hours).toBeCloseTo(1, 5);
+    expect(ado.calls[ado.calls.length - 1]).toEqual({ id: 'c1', wi: 200, delta: -0.5 });
+
+    await service.deleteInterval(stoppedA.id);
+    // No survivors left → the Harvest entry is actually deleted.
+    expect(harvest.deleted).toEqual([stoppedA.harvestTimeEntryId]);
+    expect(ado.calls[ado.calls.length - 1]).toEqual({ id: 'c1', wi: 100, delta: -1 });
+    expect(await service.listDay('2026-08-03')).toHaveLength(0);
+  });
+
+  it('ON: with no Harvest client configured (demo mode), stays local and never throws', async () => {
+    const { service, repos } = makeService(clock); // no harvest client
+    await enableAggregation(repos);
+
+    const a = await service.startTracking({ date: '2026-08-03', source: 'Manual', harvestProjectId: 1, harvestTaskId: 2 });
+    clock.advance(3_600_000);
+    const stoppedA = await service.stopTracking(a.id);
+    expect(stoppedA.harvestTimeEntryId).toBeUndefined();
+
+    const b = await service.startTracking({ date: '2026-08-03', source: 'Manual', harvestProjectId: 1, harvestTaskId: 2 });
+    clock.advance(1_800_000);
+    await expect(service.stopTracking(b.id)).resolves.toBeDefined();
   });
 });
