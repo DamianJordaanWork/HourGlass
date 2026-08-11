@@ -4,18 +4,46 @@ import { createLocalRepositories } from '@infrastructure/persistence/local-repos
 import { MemoryStorage } from '@infrastructure/persistence/local-store';
 import { LocalSecretStore } from '@infrastructure/secrets/local-secret-store';
 import { FakeTransport } from '@test/fake-transport';
-import { HARVEST_TOKEN_KEY, adoPatKey, calendarTokenKey } from '@domain/connections/connection';
+import {
+  HARVEST_TOKEN_KEY,
+  adoPatKey,
+  calendarExpiryKey,
+  calendarRefreshKey,
+  calendarTokenKey,
+} from '@domain/connections/connection';
+import type { IClock } from '@domain/common/clock';
 import type { IOAuthService, OAuthConfig, TokenSet } from '@domain/ports';
+
+class FakeClock implements IClock {
+  constructor(private t: number) {}
+  advance(ms: number) {
+    this.t += ms;
+  }
+  now() {
+    return new Date(this.t);
+  }
+  nowIso() {
+    return new Date(this.t).toISOString();
+  }
+  today() {
+    return this.nowIso().slice(0, 10);
+  }
+}
 
 class FakeOAuthService implements IOAuthService {
   authorized?: OAuthConfig;
+  refreshedWith?: { config: OAuthConfig; refreshToken: string };
+  refreshResult: TokenSet = { accessToken: 'refreshed-access-token', expiresAt: Date.now() + 3600_000 };
+  refreshError: Error | null = null;
   tokens: TokenSet = { accessToken: 'graph-access-token', refreshToken: 'graph-refresh-token', expiresAt: Date.now() + 3600_000 };
   async authorize(config: OAuthConfig): Promise<TokenSet> {
     this.authorized = config;
     return this.tokens;
   }
-  async refresh(): Promise<TokenSet> {
-    return this.tokens;
+  async refresh(config: OAuthConfig, refreshToken: string): Promise<TokenSet> {
+    this.refreshedWith = { config, refreshToken };
+    if (this.refreshError) throw this.refreshError;
+    return this.refreshResult;
   }
 }
 
@@ -24,6 +52,7 @@ function make(transport = new FakeTransport()) {
   const repos = createLocalRepositories(storage);
   const secrets = new LocalSecretStore(storage);
   const oauth = new FakeOAuthService();
+  const clock = new FakeClock(Date.now());
   let n = 0;
   const manager = new ConnectionManager({
     settings: repos.settings,
@@ -32,9 +61,10 @@ function make(transport = new FakeTransport()) {
     secrets,
     transport,
     oauth,
+    clock,
     newId: () => `conn-${++n}`,
   });
-  return { manager, repos, secrets, transport, oauth };
+  return { manager, repos, secrets, transport, oauth, clock };
 }
 
 const HARVEST_ASSIGNMENTS = {
@@ -208,5 +238,110 @@ describe('ConnectionManager', () => {
 
     const [account] = await ctx.manager.listCalendars();
     expect(account!.displayName).toBe('Google Calendar');
+  });
+
+  // ── ADR-017: proactive calendar OAuth token refresh ─────────────────────
+  describe('calendarTokenResolver token refresh (ADR-017)', () => {
+    async function connectMicrosoft(ctx2: ReturnType<typeof make>) {
+      ctx2.transport.on('GET', '/calendarView', { value: [] }).on('GET', '/v1.0/me', { displayName: 'Damian' });
+      await ctx2.manager.connectMicrosoftAccount('client-abc');
+      const [account] = await ctx2.manager.listCalendars();
+      return account!;
+    }
+
+    async function connectGoogle(ctx2: ReturnType<typeof make>) {
+      ctx2.transport.on('GET', '/calendars/primary/events', { items: [] }).on('GET', '/v1/userinfo', { name: 'Damian' });
+      await ctx2.manager.connectGoogleAccount('google-client-abc');
+      const [account] = await ctx2.manager.listCalendars();
+      return account!;
+    }
+
+    it('non-expired token: resolver returns the stored token, no refresh call made', async () => {
+      const account = await connectMicrosoft(ctx);
+      ctx.clock.advance(30 * 60_000); // 30 min — well within the 1h expiry
+
+      await ctx.manager.probeCalendarAccount(account.id);
+
+      expect(ctx.oauth.refreshedWith).toBeUndefined();
+      expect(ctx.transport.lastRequest().headers?.Authorization).toBe('Bearer graph-access-token');
+    });
+
+    it('expired token + refresh token present: refreshes with the right provider config and persists the new token + expiry', async () => {
+      const account = await connectMicrosoft(ctx);
+      const before = await ctx.secrets.get(calendarExpiryKey(account.id));
+      ctx.clock.advance(2 * 3600_000); // 2h — well past the 1h expiry
+      ctx.oauth.refreshResult = { accessToken: 'refreshed-access-token', expiresAt: ctx.clock.now().getTime() + 3600_000 };
+
+      await ctx.manager.probeCalendarAccount(account.id);
+
+      expect(ctx.oauth.refreshedWith?.refreshToken).toBe('graph-refresh-token');
+      expect(ctx.oauth.refreshedWith?.config.clientId).toBe('client-abc');
+      expect(ctx.oauth.refreshedWith?.config.tokenUrl).toBe('https://login.microsoftonline.com/common/oauth2/v2.0/token');
+      expect(await ctx.secrets.get(calendarTokenKey(account.id))).toBe('refreshed-access-token');
+      expect(ctx.transport.lastRequest().headers?.Authorization).toBe('Bearer refreshed-access-token');
+      const after = await ctx.secrets.get(calendarExpiryKey(account.id));
+      expect(after).not.toBe(before);
+      expect(Date.parse(after!)).toBeGreaterThan(Date.parse(before!));
+    });
+
+    it('rotated refresh token from the refresh response is persisted', async () => {
+      const account = await connectMicrosoft(ctx);
+      ctx.oauth.refreshResult = {
+        accessToken: 'refreshed-access-token',
+        refreshToken: 'rotated-refresh-token',
+        expiresAt: Date.now() + 3600_000,
+      };
+      ctx.clock.advance(2 * 3600_000);
+
+      await ctx.manager.probeCalendarAccount(account.id);
+
+      expect(await ctx.secrets.get(calendarRefreshKey(account.id))).toBe('rotated-refresh-token');
+    });
+
+    it('expired token but no refresh token: returns the stale token without throwing', async () => {
+      const account = await connectMicrosoft(ctx);
+      await ctx.secrets.delete(calendarRefreshKey(account.id));
+      ctx.clock.advance(2 * 3600_000);
+
+      await expect(ctx.manager.probeCalendarAccount(account.id)).resolves.toEqual({ state: 'ok', detail: '0 event(s) today' });
+
+      expect(ctx.oauth.refreshedWith).toBeUndefined();
+      expect(ctx.transport.lastRequest().headers?.Authorization).toBe('Bearer graph-access-token');
+    });
+
+    it('refresh call failure: returns the stale token without throwing', async () => {
+      const account = await connectMicrosoft(ctx);
+      ctx.oauth.refreshError = new Error('token endpoint unreachable');
+      ctx.clock.advance(2 * 3600_000);
+
+      await expect(ctx.manager.probeCalendarAccount(account.id)).resolves.toEqual({ state: 'ok', detail: '0 event(s) today' });
+
+      expect(ctx.transport.lastRequest().headers?.Authorization).toBe('Bearer graph-access-token');
+    });
+
+    it('skew boundary: a token expiring within the skew window triggers a refresh', async () => {
+      const account = await connectMicrosoft(ctx);
+      ctx.oauth.refreshResult = { accessToken: 'refreshed-access-token', expiresAt: Date.now() + 3600_000 };
+      // 1h expiry minus 30s (inside the 60s skew window) — should already refresh.
+      ctx.clock.advance(3600_000 - 30_000);
+
+      await ctx.manager.probeCalendarAccount(account.id);
+
+      expect(ctx.oauth.refreshedWith).toBeDefined();
+      expect(ctx.transport.lastRequest().headers?.Authorization).toBe('Bearer refreshed-access-token');
+    });
+
+    it('provider correctness: a Google account refreshes against the Google token endpoint/clientId', async () => {
+      const account = await connectGoogle(ctx);
+      ctx.oauth.refreshResult = { accessToken: 'refreshed-google-token', expiresAt: Date.now() + 3600_000 };
+      ctx.clock.advance(2 * 3600_000);
+
+      await ctx.manager.probeCalendarAccount(account.id);
+
+      expect(ctx.oauth.refreshedWith?.config.tokenUrl).toBe('https://oauth2.googleapis.com/token');
+      expect(ctx.oauth.refreshedWith?.config.clientId).toBe('google-client-abc');
+      expect(ctx.oauth.refreshedWith?.config.provider).toBe('Google');
+      expect(await ctx.secrets.get(calendarTokenKey(account.id))).toBe('refreshed-google-token');
+    });
   });
 });

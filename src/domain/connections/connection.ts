@@ -31,3 +31,8 @@ export function calendarTokenKey(accountId: Id): string {
 export function calendarRefreshKey(accountId: Id): string {
   return `calendar.refresh.${accountId}`;
 }
+
+/** Secret-store key for a calendar account's OAuth access token expiry (ISO timestamp). */
+export function calendarExpiryKey(accountId: Id): string {
+  return `calendar.expiry.${accountId}`;
+}

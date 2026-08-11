@@ -81,6 +81,7 @@ export function createContainer(): Container {
     secrets: new LocalSecretStore(),
     transport: createHttpTransport(),
     oauth: new WebRedirectOAuthService(),
+    clock,
     newId,
   });
 

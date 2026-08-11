@@ -1,4 +1,5 @@
 import type { Id, IsoDate } from '@domain/common/types';
+import type { IClock } from '@domain/common/clock';
 import type {
   IAdoConnectionRepository,
   IAzureDevOpsClient,
@@ -9,6 +10,7 @@ import type {
   IOAuthService,
   ISecretStore,
   ISettingsRepository,
+  OAuthConfig,
 } from '@domain/ports';
 import type { HarvestProject } from '@domain/harvest/harvest-types';
 import type { AdoConnection } from '@domain/connections/connection';
@@ -16,6 +18,7 @@ import type { CalendarAccount, CalendarProvider, Meeting } from '@domain/calenda
 import {
   HARVEST_TOKEN_KEY,
   adoPatKey,
+  calendarExpiryKey,
   calendarRefreshKey,
   calendarTokenKey,
 } from '@domain/connections/connection';
@@ -35,6 +38,9 @@ const MS_TOKEN_URL = 'https://login.microsoftonline.com/common/oauth2/v2.0/token
 const GOOGLE_SCOPES = ['https://www.googleapis.com/auth/calendar.readonly', 'openid', 'email'];
 const GOOGLE_AUTHORIZE_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
 const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token';
+
+/** Refresh a calendar access token this long before it actually expires. */
+const TOKEN_REFRESH_SKEW_MS = 60_000;
 
 /** Result of testing a connection's credentials. */
 export type Probe =
@@ -84,6 +90,7 @@ interface Deps {
   readonly secrets: ISecretStore;
   readonly transport: IHttpTransport;
   readonly oauth: IOAuthService;
+  readonly clock: IClock;
   readonly newId: () => Id;
 }
 
@@ -104,6 +111,8 @@ export class ConnectionManager {
   private readonly googleSource: GoogleCalendarSource;
   private calendarSourceMap = new Map<Id, ICalendarSource>();
   private calendarProbes = new Map<Id, Probe>();
+  /** Light in-flight de-dupe so concurrent `fetchDay` calls for one account don't trigger parallel refreshes. */
+  private readonly refreshInFlight = new Map<Id, Promise<{ accessToken: string } | null>>();
 
   constructor(private readonly deps: Deps) {
     this.icsSource = new IcsCalendarSource(deps.transport);
@@ -269,7 +278,9 @@ export class ConnectionManager {
     await this.deps.calendarAccounts.delete(id);
     await this.deps.secrets.delete(calendarTokenKey(id));
     await this.deps.secrets.delete(calendarRefreshKey(id));
+    await this.deps.secrets.delete(calendarExpiryKey(id));
     this.calendarProbes.delete(id);
+    this.refreshInFlight.delete(id);
     await this.reconfigure();
   }
 
@@ -288,6 +299,7 @@ export class ConnectionManager {
     const id = existingId ?? this.deps.newId();
     await this.deps.secrets.set(calendarTokenKey(id), tokens.accessToken);
     if (tokens.refreshToken) await this.deps.secrets.set(calendarRefreshKey(id), tokens.refreshToken);
+    await this.deps.secrets.set(calendarExpiryKey(id), new Date(tokens.expiresAt).toISOString());
 
     const profile = await this.fetchGraphProfile(tokens.accessToken);
     const existing = (await this.deps.calendarAccounts.list()).find((a) => a.id === id);
@@ -318,6 +330,7 @@ export class ConnectionManager {
     const id = existingId ?? this.deps.newId();
     await this.deps.secrets.set(calendarTokenKey(id), tokens.accessToken);
     if (tokens.refreshToken) await this.deps.secrets.set(calendarRefreshKey(id), tokens.refreshToken);
+    await this.deps.secrets.set(calendarExpiryKey(id), new Date(tokens.expiresAt).toISOString());
 
     const profile = await this.fetchGoogleProfile(tokens.accessToken);
     const existing = (await this.deps.calendarAccounts.list()).find((a) => a.id === id);
@@ -383,11 +396,77 @@ export class ConnectionManager {
   }
 
   // ── helpers ────────────────────────────────────────────────────────────
-  /** Shared, provider-agnostic resolver: every calendar provider's access token lives under the same secret key. */
-  private readonly calendarTokenResolver = async (accountId: Id) => {
-    const accessToken = await this.deps.secrets.get(calendarTokenKey(accountId));
-    return accessToken ? { accessToken } : null;
+  /**
+   * Shared, provider-agnostic resolver: every calendar provider's access token
+   * lives under the same secret key. Proactively refreshes the token when it's
+   * expired (or expiring within {@link TOKEN_REFRESH_SKEW_MS}) and a refresh
+   * token is available (ADR-017). Best-effort: any refresh failure — missing
+   * refresh token, missing client id, or a failed HTTP call — falls back to
+   * returning the existing (possibly stale) access token rather than throwing,
+   * so a sync attempt still happens instead of breaking silently-hard.
+   * In-flight refreshes are de-duped per account so concurrent `fetchDay`
+   * calls don't race two refresh requests.
+   */
+  private readonly calendarTokenResolver = async (accountId: Id): Promise<{ accessToken: string } | null> => {
+    const inFlight = this.refreshInFlight.get(accountId);
+    if (inFlight) return inFlight;
+
+    const promise = this.resolveCalendarToken(accountId).finally(() => {
+      this.refreshInFlight.delete(accountId);
+    });
+    this.refreshInFlight.set(accountId, promise);
+    return promise;
   };
+
+  private async resolveCalendarToken(accountId: Id): Promise<{ accessToken: string } | null> {
+    const accessToken = await this.deps.secrets.get(calendarTokenKey(accountId));
+    if (!accessToken) return null;
+
+    const expiryRaw = await this.deps.secrets.get(calendarExpiryKey(accountId));
+    const expiresAt = expiryRaw ? Date.parse(expiryRaw) : NaN;
+    if (Number.isNaN(expiresAt)) return { accessToken };
+
+    const now = this.deps.clock.now().getTime();
+    if (now < expiresAt - TOKEN_REFRESH_SKEW_MS) return { accessToken };
+
+    const refreshToken = await this.deps.secrets.get(calendarRefreshKey(accountId));
+    if (!refreshToken) {
+      console.warn(`[calendar] access token for account ${accountId} is expired but no refresh token is stored; using the stale token`);
+      return { accessToken };
+    }
+
+    const account = (await this.deps.calendarAccounts.list()).find((a) => a.id === accountId);
+    const config = account ? await this.refreshConfigFor(account) : null;
+    if (!config) {
+      console.warn(`[calendar] cannot refresh access token for account ${accountId}: no OAuth config available; using the stale token`);
+      return { accessToken };
+    }
+
+    try {
+      const refreshed = await this.deps.oauth.refresh(config, refreshToken);
+      await this.deps.secrets.set(calendarTokenKey(accountId), refreshed.accessToken);
+      await this.deps.secrets.set(calendarExpiryKey(accountId), new Date(refreshed.expiresAt).toISOString());
+      if (refreshed.refreshToken) {
+        await this.deps.secrets.set(calendarRefreshKey(accountId), refreshed.refreshToken);
+      }
+      return { accessToken: refreshed.accessToken };
+    } catch (e) {
+      console.warn(`[calendar] token refresh failed for account ${accountId}; using the stale token`, e);
+      return { accessToken };
+    }
+  }
+
+  /** Builds the provider-specific refresh config for a calendar account (Microsoft/Google only; ICS has no OAuth). */
+  private async refreshConfigFor(account: CalendarAccount): Promise<OAuthConfig | null> {
+    if (account.provider === 'Ics') return null;
+    const settings = await this.deps.settings.get();
+    if (account.provider === 'Microsoft') {
+      if (!settings.microsoftClientId) return null;
+      return this.msOAuthConfig(settings.microsoftClientId);
+    }
+    if (!settings.googleClientId) return null;
+    return this.googleOAuthConfig(settings.googleClientId);
+  }
 
   private msOAuthConfig(clientId: string) {
     return {
