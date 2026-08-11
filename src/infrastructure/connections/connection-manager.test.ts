@@ -182,4 +182,31 @@ describe('ConnectionManager', () => {
     expect(ctx.manager.calendars().size).toBe(0);
     expect(await ctx.secrets.get(calendarTokenKey(account!.id))).toBeNull();
   });
+
+  it('connects a Google calendar account via OAuth, stores tokens, and probes it', async () => {
+    ctx.transport
+      .on('GET', '/calendars/primary/events', { items: [] })
+      .on('GET', '/v1/userinfo', { name: 'Damian Jordaan', email: 'damianj@agilebridge.co.za' });
+
+    const probe = await ctx.manager.connectGoogleAccount('google-client-abc');
+
+    expect(probe).toEqual({ state: 'ok', detail: '0 event(s) today' });
+    expect(ctx.oauth.authorized?.clientId).toBe('google-client-abc');
+    expect(ctx.oauth.authorized?.provider).toBe('Google');
+    const [account] = await ctx.manager.listCalendars();
+    expect(account!.provider).toBe('Google');
+    expect(account!.displayName).toBe('Damian Jordaan');
+    expect(account!.email).toBe('damianj@agilebridge.co.za');
+    expect(await ctx.secrets.get(calendarTokenKey(account!.id))).toBe('graph-access-token');
+    expect(ctx.manager.calendars().get(account!.id)).toBeDefined();
+  });
+
+  it('a Google account with no profile falls back to a default display name', async () => {
+    ctx.transport.on('GET', '/calendars/primary/events', { items: [] }).on('GET', '/v1/userinfo', {}, 401);
+
+    await ctx.manager.connectGoogleAccount('google-client-abc');
+
+    const [account] = await ctx.manager.listCalendars();
+    expect(account!.displayName).toBe('Google Calendar');
+  });
 });

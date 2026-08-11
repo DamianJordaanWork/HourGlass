@@ -32,10 +32,15 @@ export function useCalendarActions() {
       c.connections.connectMicrosoftAccount(clientId, existingId),
     onSuccess: invalidate,
   });
+  const connectGoogle = useMutation({
+    mutationFn: ({ clientId, existingId }: { clientId: string; existingId?: Id }) =>
+      c.connections.connectGoogleAccount(clientId, existingId),
+    onSuccess: invalidate,
+  });
   const probeCalendar = useMutation({
     mutationFn: (id: Id) => c.connections.probeCalendarAccount(id),
     onSuccess: invalidate,
   });
 
-  return { saveCalendar, deleteCalendar, connectMicrosoft, probeCalendar };
+  return { saveCalendar, deleteCalendar, connectMicrosoft, connectGoogle, probeCalendar };
 }

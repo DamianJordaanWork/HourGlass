@@ -26,10 +26,15 @@ import {
 } from '@infrastructure/ado/ado-client';
 import { IcsCalendarSource } from '@infrastructure/calendar/ics-calendar-source';
 import { MicrosoftGraphCalendarSource } from '@infrastructure/calendar/microsoft-graph-calendar-source';
+import { GoogleCalendarSource } from '@infrastructure/calendar/google-calendar-source';
 
 const GRAPH_SCOPES = ['Calendars.Read', 'offline_access', 'openid', 'profile'];
 const MS_AUTHORIZE_URL = 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize';
 const MS_TOKEN_URL = 'https://login.microsoftonline.com/common/oauth2/v2.0/token';
+
+const GOOGLE_SCOPES = ['https://www.googleapis.com/auth/calendar.readonly', 'openid', 'email'];
+const GOOGLE_AUTHORIZE_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
+const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token';
 
 /** Result of testing a connection's credentials. */
 export type Probe =
@@ -96,12 +101,14 @@ export class ConnectionManager {
   private harvestProbe: Probe = { state: 'idle' };
   private readonly icsSource: IcsCalendarSource;
   private readonly graphSource: MicrosoftGraphCalendarSource;
+  private readonly googleSource: GoogleCalendarSource;
   private calendarSourceMap = new Map<Id, ICalendarSource>();
   private calendarProbes = new Map<Id, Probe>();
 
   constructor(private readonly deps: Deps) {
     this.icsSource = new IcsCalendarSource(deps.transport);
-    this.graphSource = new MicrosoftGraphCalendarSource(deps.transport, this.graphTokenResolver);
+    this.graphSource = new MicrosoftGraphCalendarSource(deps.transport, this.calendarTokenResolver);
+    this.googleSource = new GoogleCalendarSource(deps.transport, this.calendarTokenResolver);
   }
 
   // ── live client accessors (passed to TrackingService as providers) ────────
@@ -165,7 +172,9 @@ export class ConnectionManager {
     const map = new Map<Id, ICalendarSource>();
     for (const account of calendarAccounts) {
       if (!account.enabled) continue;
-      map.set(account.id, account.provider === 'Ics' ? this.icsSource : this.graphSource);
+      const source =
+        account.provider === 'Ics' ? this.icsSource : account.provider === 'Google' ? this.googleSource : this.graphSource;
+      map.set(account.id, source);
     }
     this.calendarSourceMap = map;
   }
@@ -294,6 +303,36 @@ export class ConnectionManager {
     return this.probeCalendarAccount(id);
   }
 
+  /**
+   * Runs the interactive Google OAuth popup flow, persists the resulting
+   * tokens, and upserts a `Google`-provider calendar account (adopting an
+   * existing account with `existingId` when re-connecting/re-authorizing).
+   */
+  async connectGoogleAccount(clientId: string, existingId?: Id): Promise<Probe> {
+    const settings = await this.deps.settings.get();
+    if (settings.googleClientId !== clientId.trim()) {
+      await this.deps.settings.save({ ...settings, googleClientId: clientId.trim() });
+    }
+
+    const tokens = await this.deps.oauth.authorize(this.googleOAuthConfig(clientId));
+    const id = existingId ?? this.deps.newId();
+    await this.deps.secrets.set(calendarTokenKey(id), tokens.accessToken);
+    if (tokens.refreshToken) await this.deps.secrets.set(calendarRefreshKey(id), tokens.refreshToken);
+
+    const profile = await this.fetchGoogleProfile(tokens.accessToken);
+    const existing = (await this.deps.calendarAccounts.list()).find((a) => a.id === id);
+    const account: CalendarAccount = {
+      id,
+      provider: 'Google',
+      displayName: profile.name ?? existing?.displayName ?? 'Google Calendar',
+      email: profile.email ?? existing?.email,
+      enabled: true,
+    };
+    await this.deps.calendarAccounts.upsert(account);
+    await this.reconfigure();
+    return this.probeCalendarAccount(id);
+  }
+
   // ── probes ────────────────────────────────────────────────────────────────
   async probeHarvest(): Promise<Probe> {
     if (!this.liveHarvest) return { state: 'idle' };
@@ -344,7 +383,8 @@ export class ConnectionManager {
   }
 
   // ── helpers ────────────────────────────────────────────────────────────
-  private readonly graphTokenResolver = async (accountId: Id) => {
+  /** Shared, provider-agnostic resolver: every calendar provider's access token lives under the same secret key. */
+  private readonly calendarTokenResolver = async (accountId: Id) => {
     const accessToken = await this.deps.secrets.get(calendarTokenKey(accountId));
     return accessToken ? { accessToken } : null;
   };
@@ -361,6 +401,18 @@ export class ConnectionManager {
     };
   }
 
+  private googleOAuthConfig(clientId: string) {
+    return {
+      provider: 'Google' as const,
+      clientId: clientId.trim(),
+      scopes: GOOGLE_SCOPES,
+      authorizeUrl: GOOGLE_AUTHORIZE_URL,
+      tokenUrl: GOOGLE_TOKEN_URL,
+      redirectUri: `${window.location.origin}/?oauth=callback`,
+      extraAuthParams: { access_type: 'offline', prompt: 'consent' },
+    };
+  }
+
   private async fetchGraphProfile(accessToken: string): Promise<{ displayName?: string; email?: string }> {
     try {
       const res = await this.deps.transport.send({
@@ -371,6 +423,21 @@ export class ConnectionManager {
       if (res.status < 200 || res.status >= 300) return {};
       const dto = JSON.parse(res.body) as { displayName?: string; mail?: string; userPrincipalName?: string };
       return { displayName: dto.displayName, email: dto.mail ?? dto.userPrincipalName };
+    } catch {
+      return {};
+    }
+  }
+
+  private async fetchGoogleProfile(accessToken: string): Promise<{ name?: string; email?: string }> {
+    try {
+      const res = await this.deps.transport.send({
+        method: 'GET',
+        url: 'https://openidconnect.googleapis.com/v1/userinfo',
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      if (res.status < 200 || res.status >= 300) return {};
+      const dto = JSON.parse(res.body) as { name?: string; email?: string };
+      return { name: dto.name, email: dto.email };
     } catch {
       return {};
     }

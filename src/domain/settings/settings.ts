@@ -15,6 +15,8 @@ export interface Settings {
   readonly harvestAccountId?: string;
   /** The user's own Azure AD app registration Client ID (public, not a secret). */
   readonly microsoftClientId?: string;
+  /** The user's own Google Cloud OAuth Client ID (public, not a secret). */
+  readonly googleClientId?: string;
   readonly defaultProjectId?: HarvestProjectId;
   readonly defaultTaskId?: HarvestTaskId;
   /** Stop any running timer when a new one starts. */

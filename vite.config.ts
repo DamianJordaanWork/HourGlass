@@ -47,6 +47,11 @@ export default defineConfig({
         changeOrigin: true,
         rewrite: (p) => p.replace(/^\/__graph/, ''),
       },
+      '/__gcal': {
+        target: 'https://www.googleapis.com',
+        changeOrigin: true,
+        rewrite: (p) => p.replace(/^\/__gcal/, ''),
+      },
     },
     watch: {
       ignored: [

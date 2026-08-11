@@ -8,4 +8,7 @@ export interface Migration {
 }
 
 /** Ordered migration set applied by {@link runMigrations}. Append-only. */
-export const MIGRATIONS: readonly Migration[] = [{ version: 1, name: 'schema_v1', statements: SCHEMA_V1 }];
+export const MIGRATIONS: readonly Migration[] = [
+  { version: 1, name: 'schema_v1', statements: SCHEMA_V1 },
+  { version: 2, name: 'settings_google_client_id', statements: ['ALTER TABLE settings ADD COLUMN google_client_id TEXT'] },
+];

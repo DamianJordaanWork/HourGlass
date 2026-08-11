@@ -214,22 +214,67 @@ const emptyCalendar = {
   clientId: '',
 };
 
+/** Per-provider OAuth copy for the shared Microsoft/Google connect block. */
+const OAUTH_PROVIDER_META: Record<'Microsoft' | 'Google', {
+  fieldLabel: string;
+  placeholder: string;
+  helper: ReactNode;
+  buttonLabel: string;
+  connectingLabel: string;
+}> = {
+  Microsoft: {
+    fieldLabel: 'Azure AD app Client ID',
+    placeholder: 'Client ID from your Azure AD app registration',
+    helper: (
+      <>
+        Register a public-client app in Azure AD (portal.azure.com → App registrations) with redirect URI{' '}
+        <code className="text-[11px]">{window.location.origin}/?oauth=callback</code> and delegated permission{' '}
+        <code className="text-[11px]">Calendars.Read</code> (+ <code className="text-[11px]">offline_access</code>).
+      </>
+    ),
+    buttonLabel: 'Connect with Microsoft',
+    connectingLabel: 'Connecting…',
+  },
+  Google: {
+    fieldLabel: 'Google OAuth client ID',
+    placeholder: 'Client ID from your Google Cloud OAuth client',
+    helper: (
+      <>
+        Register a Web application OAuth client (console.cloud.google.com → APIs &amp; Services → Credentials) with
+        redirect URI <code className="text-[11px]">{window.location.origin}/?oauth=callback</code> and scope{' '}
+        <code className="text-[11px]">calendar.readonly</code>.
+      </>
+    ),
+    buttonLabel: 'Connect with Google',
+    connectingLabel: 'Connecting…',
+  },
+};
+
 function CalendarsSection() {
   const { data: settings } = useSettings();
   const { data: accounts } = useCalendarAccounts();
-  const { saveCalendar, deleteCalendar, connectMicrosoft } = useCalendarActions();
+  const { saveCalendar, deleteCalendar, connectMicrosoft, connectGoogle } = useCalendarActions();
   const [form, setForm] = useState(emptyCalendar);
   const editing = form.id !== undefined;
+  const isOAuthProvider = form.provider === 'Microsoft' || form.provider === 'Google';
 
   useEffect(() => {
-    if (settings?.microsoftClientId && !form.clientId) set({ clientId: settings.microsoftClientId });
+    if (!isOAuthProvider || form.clientId) return;
+    const prefill = form.provider === 'Google' ? settings?.googleClientId : settings?.microsoftClientId;
+    if (prefill) set({ clientId: prefill });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [settings?.microsoftClientId]);
+  }, [settings?.microsoftClientId, settings?.googleClientId, form.provider]);
 
   const set = (patch: Partial<typeof form>) => setForm((f) => ({ ...f, ...patch }));
 
   const startEdit = (a: CalendarAccountView) =>
-    setForm({ id: a.id, provider: a.provider, displayName: a.displayName, icsUrl: a.icsUrl ?? '', clientId: settings?.microsoftClientId ?? '' });
+    setForm({
+      id: a.id,
+      provider: a.provider,
+      displayName: a.displayName,
+      icsUrl: a.icsUrl ?? '',
+      clientId: a.provider === 'Google' ? (settings?.googleClientId ?? '') : (settings?.microsoftClientId ?? ''),
+    });
 
   const toggleEnabled = (a: CalendarAccountView) =>
     saveCalendar.mutate({ id: a.id, provider: a.provider, displayName: a.displayName, icsUrl: a.icsUrl, enabled: !a.enabled });
@@ -241,8 +286,10 @@ function CalendarsSection() {
     );
   };
 
+  const oauthMutation = form.provider === 'Google' ? connectGoogle : connectMicrosoft;
+
   const connect = () => {
-    connectMicrosoft.mutate(
+    oauthMutation.mutate(
       { clientId: form.clientId, existingId: form.id },
       { onSuccess: () => setForm(emptyCalendar) },
     );
@@ -280,16 +327,16 @@ function CalendarsSection() {
           {!editing && (
             <Field label="Provider">
               <div className="flex gap-2">
-                {(['Microsoft', 'Ics'] as CalendarProvider[]).map((p) => (
+                {(['Microsoft', 'Google', 'Ics'] as CalendarProvider[]).map((p) => (
                   <button
                     key={p}
-                    onClick={() => set({ provider: p })}
+                    onClick={() => set({ provider: p, clientId: '' })}
                     className={
                       'rounded-lg border px-3 py-1.5 text-sm font-medium ' +
                       (form.provider === p ? 'border-primary bg-primary-soft text-primary-soft-text' : 'border-hairline text-muted hover:text-ink')
                     }
                   >
-                    {p === 'Microsoft' ? 'Microsoft (Outlook)' : 'ICS URL'}
+                    {p === 'Microsoft' ? 'Microsoft (Outlook)' : p === 'Google' ? 'Google (Gmail)' : 'ICS URL'}
                   </button>
                 ))}
               </div>
@@ -314,21 +361,24 @@ function CalendarsSection() {
             </>
           ) : (
             <>
-              <Field label="Azure AD app Client ID">
-                <input className={inputCls} value={form.clientId} onChange={(e) => set({ clientId: e.target.value })} placeholder="Client ID from your Azure AD app registration" />
-              </Field>
-              <p className="text-xs text-muted">
-                Register a public-client app in Azure AD (portal.azure.com → App registrations) with redirect URI{' '}
-                <code className="text-[11px]">{window.location.origin}/?oauth=callback</code> and delegated permission{' '}
-                <code className="text-[11px]">Calendars.Read</code> (+ <code className="text-[11px]">offline_access</code>).
-              </p>
-              <div className="flex items-center gap-3">
-                <button className={primaryBtn} onClick={connect} disabled={connectMicrosoft.isPending || !form.clientId.trim()}>
-                  {connectMicrosoft.isPending ? 'Connecting…' : 'Connect with Microsoft'}
-                </button>
-                {editing && <button className={ghostBtn} onClick={() => setForm(emptyCalendar)}>Cancel</button>}
-                <ProbeBadge probe={connectMicrosoft.data} />
-              </div>
+              {(() => {
+                const meta = OAUTH_PROVIDER_META[form.provider as 'Microsoft' | 'Google'];
+                return (
+                  <>
+                    <Field label={meta.fieldLabel}>
+                      <input className={inputCls} value={form.clientId} onChange={(e) => set({ clientId: e.target.value })} placeholder={meta.placeholder} />
+                    </Field>
+                    <p className="text-xs text-muted">{meta.helper}</p>
+                    <div className="flex items-center gap-3">
+                      <button className={primaryBtn} onClick={connect} disabled={oauthMutation.isPending || !form.clientId.trim()}>
+                        {oauthMutation.isPending ? meta.connectingLabel : meta.buttonLabel}
+                      </button>
+                      {editing && <button className={ghostBtn} onClick={() => setForm(emptyCalendar)}>Cancel</button>}
+                      <ProbeBadge probe={oauthMutation.data} />
+                    </div>
+                  </>
+                );
+              })()}
             </>
           )}
         </div>

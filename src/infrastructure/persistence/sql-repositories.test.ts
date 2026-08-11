@@ -289,6 +289,19 @@ describe('sql-repositories', () => {
       expect(rows).toHaveLength(1);
     });
 
+    it('round-trips googleClientId (migration v2 column)', async () => {
+      const db = createInMemoryWasmDatabase();
+      const repos = createSqlRepositories(db);
+
+      expect((await repos.settings.get()).googleClientId).toBeUndefined();
+
+      await repos.settings.save({ ...DEFAULT_SETTINGS, googleClientId: 'google-client-abc' });
+      expect((await repos.settings.get()).googleClientId).toBe('google-client-abc');
+
+      const rows = await db.query<{ google_client_id: string | null }>('SELECT google_client_id FROM settings');
+      expect(rows).toEqual([{ google_client_id: 'google-client-abc' }]);
+    });
+
     it('keeps a single id=1 row across repeated saves (singleton)', async () => {
       const db = createInMemoryWasmDatabase();
       const repos = createSqlRepositories(db);

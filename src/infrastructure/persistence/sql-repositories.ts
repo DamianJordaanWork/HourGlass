@@ -258,9 +258,9 @@ class SqlSettingsRepository implements ISettingsRepository {
     await this.db.execute(
       `INSERT OR REPLACE INTO settings
         (id, work_day_start, work_day_end, break_minutes, min_dead_time_minutes, weekly_goal_hours,
-         refresh_interval_minutes, theme, harvest_account_id, microsoft_client_id, default_project_id,
-         default_task_id, auto_stop_on_switch, aggregate_same_task_per_day, embed_metadata, hg1_scheme)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         refresh_interval_minutes, theme, harvest_account_id, microsoft_client_id, google_client_id,
+         default_project_id, default_task_id, auto_stop_on_switch, aggregate_same_task_per_day, embed_metadata, hg1_scheme)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       settingsParams(settings),
     );
     return settings;

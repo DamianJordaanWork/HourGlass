@@ -57,7 +57,7 @@ export class WebRedirectOAuthService implements IOAuthService {
     });
 
     const popup = window.open(`${config.authorizeUrl}?${params.toString()}`, 'hourglass-oauth', 'width=500,height=650');
-    if (!popup) throw new Error('Popup blocked — allow popups for Hourglass to connect Microsoft.');
+    if (!popup) throw new Error('Popup blocked — allow popups for Hourglass to connect your calendar.');
 
     const code = await this.awaitCallback(state, popup);
     return this.exchangeCode(config, code, verifier);

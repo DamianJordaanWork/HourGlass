@@ -367,6 +367,7 @@ export interface SettingsRow {
   readonly theme: string;
   readonly harvest_account_id: string | null;
   readonly microsoft_client_id: string | null;
+  readonly google_client_id: string | null;
   readonly default_project_id: number | null;
   readonly default_task_id: number | null;
   readonly auto_stop_on_switch: number;
@@ -386,6 +387,7 @@ export function rowToSettings(row: SettingsRow): Settings {
     theme: row.theme as Settings['theme'],
     harvestAccountId: nullToUndef(row.harvest_account_id),
     microsoftClientId: nullToUndef(row.microsoft_client_id),
+    googleClientId: nullToUndef(row.google_client_id),
     defaultProjectId: nullToUndef(row.default_project_id),
     defaultTaskId: nullToUndef(row.default_task_id),
     autoStopOnSwitch: intToBool(row.auto_stop_on_switch),
@@ -407,6 +409,7 @@ export function settingsParams(s: Settings): readonly SqlParam[] {
     s.theme,
     undefToNull(s.harvestAccountId),
     undefToNull(s.microsoftClientId),
+    undefToNull(s.googleClientId),
     undefToNull(s.defaultProjectId),
     undefToNull(s.defaultTaskId),
     boolToInt(s.autoStopOnSwitch),

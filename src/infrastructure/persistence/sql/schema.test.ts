@@ -76,4 +76,9 @@ describe('SCHEMA_V1', () => {
     expect(stmt).toContain('hg1_scheme');
     expect(stmt).toContain('embed_metadata');
   });
+
+  it('settings does NOT have google_client_id in v1 (added append-only by migration v2)', () => {
+    const stmt = createTableStatements.find((s) => s.includes('settings ('));
+    expect(stmt).not.toContain('google_client_id');
+  });
 });
