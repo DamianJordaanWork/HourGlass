@@ -15,6 +15,7 @@ import {
 } from '@infrastructure/connections/connection-manager';
 import { TrackingService } from '@application/tracking-service';
 import { MappingService } from '@application/mapping-service';
+import { fanOutWorkItems } from '@composition/list-work-items';
 import {
   clearBrokenDemoSeed,
   demoMeetings,
@@ -45,7 +46,8 @@ export interface Container {
   isConfigured(): boolean;
   /** Rebuild live clients after connections change, e.g. from the Settings UI. */
   reconfigure(): Promise<void>;
-  listWorkItems(): Promise<WorkItem[]>;
+  /** With `wiql`, runs that saved query per enabled connection; without, lists items assigned to me. */
+  listWorkItems(wiql?: string): Promise<WorkItem[]>;
   listMeetings(date: IsoDate): Promise<Meeting[]>;
   harvestName(projectId?: number, taskId?: number): HarvestName;
   /** Project/task options for template pickers — live when connected, else demo. */
@@ -121,21 +123,13 @@ export function createContainer(): Container {
         await seedDemo(repos);
       }
     }),
-    async listWorkItems() {
-      const ado = connections.ado();
-      if (!ado) return demoWorkItems;
-      const enabled = (await repos.adoConnections.list()).filter((c) => c.enabled);
-      const batches = await Promise.all(
-        enabled.map(async (conn) => {
-          try {
-            return await ado.listAssignedWorkItems(conn.id, { iterationPath: conn.iterationPath });
-          } catch (e) {
-            console.warn('[ado] listAssignedWorkItems failed', conn.label, e);
-            return [] as WorkItem[];
-          }
-        }),
-      );
-      return batches.flat();
+    listWorkItems(wiql) {
+      return fanOutWorkItems({
+        ado: connections.ado(),
+        listEnabledAdoConnections: async () => (await repos.adoConnections.list()).filter((c) => c.enabled),
+        demoWorkItems,
+        wiql,
+      });
     },
     async listMeetings(date) {
       const accounts = (await repos.calendarAccounts.list()).filter((a) => a.enabled);

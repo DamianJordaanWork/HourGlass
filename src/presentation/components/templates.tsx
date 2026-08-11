@@ -336,6 +336,16 @@ function TemplateEditor({
         {labelCls('Default notes (optional)')}
         <input className={inputCls} value={t.defaultNotes ?? ''} onChange={(e) => set({ defaultNotes: e.target.value })} placeholder="Prefilled note when started" />
       </label>
+      <label className="flex flex-col gap-1">
+        {labelCls('ADO saved query (optional)')}
+        <textarea
+          className={inputCls + ' min-h-[4.5rem] font-mono text-xs'}
+          value={t.adoQuery ?? ''}
+          onChange={(e) => set({ adoQuery: e.target.value || undefined })}
+          placeholder={"SELECT [System.Id] FROM WorkItems WHERE [System.State] = 'Active'"}
+        />
+        <p className="text-[11px] text-muted">When set, this template becomes selectable as a Work Items filter in the source rail.</p>
+      </label>
       <label className="flex items-center gap-2 text-sm text-ink">
         <input type="checkbox" checked={t.enabled} onChange={(e) => set({ enabled: e.target.checked })} />
         Enabled

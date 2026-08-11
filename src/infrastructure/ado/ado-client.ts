@@ -72,16 +72,13 @@ export class AzureDevOpsClient implements IAzureDevOpsClient {
     }
     const wiql = `SELECT [System.Id] FROM WorkItems WHERE ${clauses.join(' AND ')} ORDER BY [System.ChangedDate] DESC`;
 
-    const wiqlRes = JSON.parse(
-      await this.send(conn, 'POST', `/_apis/wit/wiql?${API}`, { query: wiql }),
-    ) as WiqlResult;
-    const ids = wiqlRes.workItems.map((w) => w.id).slice(0, 200);
-    if (ids.length === 0) return [];
+    return this.runWiql(conn, connectionId, wiql);
+  }
 
-    const batch = JSON.parse(
-      await this.send(conn, 'GET', `/_apis/wit/workitems?ids=${ids.join(',')}&fields=${FIELDS.join(',')}&${API}`),
-    ) as BatchResult;
-    return batch.value.map((dto) => this.mapWorkItem(conn, connectionId, dto));
+  /** Run a caller-supplied WIQL query verbatim (e.g. a saved template query). */
+  async queryWorkItems(connectionId: Id, wiql: string): Promise<WorkItem[]> {
+    const conn = await this.connection(connectionId);
+    return this.runWiql(conn, connectionId, wiql);
   }
 
   async getWorkItem(connectionId: Id, workItemId: number): Promise<WorkItem> {
@@ -110,6 +107,20 @@ export class AzureDevOpsClient implements IAzureDevOpsClient {
   }
 
   // ── helpers ─────────────────────────────────────────────────────────────
+  /** WIQL → ids → fixed-field batch fetch → map. Shared by assigned + saved-query paths. */
+  private async runWiql(conn: AdoConnectionConfig, connectionId: Id, wiql: string): Promise<WorkItem[]> {
+    const wiqlRes = JSON.parse(
+      await this.send(conn, 'POST', `/_apis/wit/wiql?${API}`, { query: wiql }),
+    ) as WiqlResult;
+    const ids = wiqlRes.workItems.map((w) => w.id).slice(0, 200);
+    if (ids.length === 0) return [];
+
+    const batch = JSON.parse(
+      await this.send(conn, 'GET', `/_apis/wit/workitems?ids=${ids.join(',')}&fields=${FIELDS.join(',')}&${API}`),
+    ) as BatchResult;
+    return batch.value.map((dto) => this.mapWorkItem(conn, connectionId, dto));
+  }
+
   private async connection(connectionId: Id): Promise<AdoConnectionConfig> {
     const conn = await this.resolve(connectionId);
     if (!conn) throw new Error(`Unknown ADO connection: ${connectionId}`);

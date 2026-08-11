@@ -4,6 +4,8 @@ import type { Meeting } from '@domain/calendar/meeting';
 import { meetingDurationHours } from '@domain/calendar/meeting';
 import { useSelectedDay } from '@presentation/state/selected-day';
 import { useEntryModalStore } from '@presentation/state/entry-modal';
+import { useWorkItemFilter } from '@presentation/state/work-item-filter';
+import { useContainer } from '@presentation/container-context';
 import {
   useMeetingMapping,
   useMeetings,
@@ -57,14 +59,43 @@ function StartButton({ onClick, label = 'Start' }: { onClick: () => void; label?
 }
 
 function WorkItemsTab() {
+  const c = useContainer();
   const { data: items, isLoading } = useWorkItems();
-  if (isLoading) return <Hint>Loading work items…</Hint>;
-  if (!items?.length) return <Hint>No assigned work items.</Hint>;
+  const { data: templates } = useQuickTemplates();
+  const { filterId, setFilter } = useWorkItemFilter();
+  const queryTemplates = (templates ?? []).filter((t) => t.enabled && t.adoQuery?.trim());
+  const showFilter = c.isConfigured() && queryTemplates.length > 0;
+
+  const onChange = (value: string) => {
+    if (value === '') {
+      setFilter(null);
+      return;
+    }
+    const tpl = queryTemplates.find((t) => t.id === value);
+    if (tpl?.adoQuery) setFilter({ id: tpl.id, wiql: tpl.adoQuery });
+  };
+
   return (
     <div className="flex flex-col gap-2">
-      {items.map((item) => (
-        <WorkItemCard key={item.id} item={item} />
-      ))}
+      {showFilter && (
+        <select
+          className="rounded-lg border border-hairline bg-canvas px-2 py-1.5 text-xs text-ink outline-none focus:border-primary"
+          value={filterId ?? ''}
+          onChange={(e) => onChange(e.target.value)}
+        >
+          <option value="">Assigned to me</option>
+          {queryTemplates.map((t) => (
+            <option key={t.id} value={t.id}>{t.label}</option>
+          ))}
+        </select>
+      )}
+      {isLoading ? (
+        <Hint>Loading work items…</Hint>
+      ) : !items?.length ? (
+        <Hint>{filterId ? 'No work items match this filter.' : 'No assigned work items.'}</Hint>
+      ) : (
+        items.map((item) => <WorkItemCard key={item.id} item={item} />)
+      )}
     </div>
   );
 }

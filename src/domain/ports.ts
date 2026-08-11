@@ -38,6 +38,8 @@ export interface ListWorkItemsOptions {
 
 export interface IAzureDevOpsClient {
   listAssignedWorkItems(connectionId: Id, options?: ListWorkItemsOptions): Promise<WorkItem[]>;
+  /** Run a caller-supplied WIQL query verbatim (e.g. a saved template query). */
+  queryWorkItems(connectionId: Id, wiql: string): Promise<WorkItem[]>;
   getWorkItem(connectionId: Id, workItemId: number): Promise<WorkItem>;
   /** Increment `Microsoft.VSTS.Scheduling.CompletedWork` by `deltaHours` (best-effort). */
   syncCompletedWork(connectionId: Id, workItemId: number, deltaHours: number): Promise<void>;

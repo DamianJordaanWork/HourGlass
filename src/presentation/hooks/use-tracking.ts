@@ -10,6 +10,7 @@ import type { UpdateIntervalInput } from '@application/tracking-service';
 import { useContainer } from '@presentation/container-context';
 import { pollingIntervalMs } from '@presentation/lib/polling';
 import { useSettings } from '@presentation/hooks/use-settings';
+import { useWorkItemFilter } from '@presentation/state/work-item-filter';
 
 /** Fields the manual-entry modal supplies. */
 export interface ManualEntryInput {
@@ -28,10 +29,11 @@ export interface ManualEntryInput {
 export function useWorkItems() {
   const c = useContainer();
   const { data: settings } = useSettings();
+  const { filterId, wiql } = useWorkItemFilter();
   const configured = c.isConfigured();
   return useQuery({
-    queryKey: ['workItems'],
-    queryFn: () => c.listWorkItems(),
+    queryKey: ['workItems', filterId ?? 'assigned'],
+    queryFn: () => c.listWorkItems(wiql ?? undefined),
     refetchInterval: configured ? pollingIntervalMs(settings?.refreshIntervalMinutes ?? 0) : false,
     refetchIntervalInBackground: false,
     refetchOnWindowFocus: true,

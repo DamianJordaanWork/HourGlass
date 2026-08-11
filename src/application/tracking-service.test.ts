@@ -68,7 +68,7 @@ class FakeHarvest implements IHarvestClient {
 function makeService(clock: FakeClock, harvest?: FakeHarvest, adoGuid?: (connectionId: string) => Promise<string | undefined>) {
   const repos = createLocalRepositories(new MemoryStorage());
   let n = 0;
-  const ado = { calls: [] as { id: string; wi: number; delta: number }[], async listAssignedWorkItems() { return []; }, async getWorkItem() { throw new Error('n/a'); }, async syncCompletedWork(id: string, wi: number, delta: number) { this.calls.push({ id, wi, delta }); } };
+  const ado = { calls: [] as { id: string; wi: number; delta: number }[], async listAssignedWorkItems() { return []; }, async queryWorkItems() { return []; }, async getWorkItem() { throw new Error('n/a'); }, async syncCompletedWork(id: string, wi: number, delta: number) { this.calls.push({ id, wi, delta }); } };
   const service = new TrackingService({
     intervals: repos.intervals,
     settings: repos.settings,

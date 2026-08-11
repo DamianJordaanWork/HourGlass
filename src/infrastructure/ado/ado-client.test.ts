@@ -75,4 +75,53 @@ describe('AzureDevOpsClient', () => {
     await new AzureDevOpsClient(http, resolver).syncCompletedWork('c1', 4821, 0);
     expect(http.requests).toHaveLength(0);
   });
+
+  describe('queryWorkItems', () => {
+    it('runs the caller-supplied WIQL verbatim, then batch-fetches and maps', async () => {
+      const customWiql = "SELECT [System.Id] FROM WorkItems WHERE [System.State] = 'Active'";
+      const http = new FakeTransport()
+        .on('POST', '/_apis/wit/wiql', { workItems: [{ id: 99 }] })
+        .on('GET', '/_apis/wit/workitems?ids=', {
+          value: [
+            {
+              id: 99,
+              fields: {
+                'System.Title': 'Ship the release',
+                'System.WorkItemType': 'Task',
+                'System.State': 'Active',
+                'System.TeamProject': 'LetsDrive',
+                'System.IterationPath': 'LetsDrive\\Sprint 12',
+                'System.AreaPath': 'LetsDrive\\Web',
+                'System.AssignedTo': { displayName: 'Damian Jordaan' },
+                'System.Tags': '',
+              },
+            },
+          ],
+        });
+
+      const items = await new AzureDevOpsClient(http, resolver).queryWorkItems('c1', customWiql);
+
+      expect(items).toHaveLength(1);
+      expect(items[0]).toMatchObject({ id: 99, title: 'Ship the release' });
+
+      const wiqlBody = JSON.parse(http.requestMatching('wiql').body!);
+      expect(wiqlBody.query).toBe(customWiql);
+      expect(wiqlBody.query).toContain("[System.State] = 'Active'");
+      expect(wiqlBody.query).not.toContain('@Me');
+    });
+
+    it('returns [] and skips the batch fetch when the query yields no ids', async () => {
+      const http = new FakeTransport().on('POST', '/_apis/wit/wiql', { workItems: [] });
+      const items = await new AzureDevOpsClient(http, resolver).queryWorkItems('c1', 'SELECT [System.Id] FROM WorkItems');
+      expect(items).toEqual([]);
+      expect(http.requests.every((r) => !r.url.includes('ids='))).toBe(true);
+    });
+
+    it('rejects when the WIQL request is non-2xx', async () => {
+      const http = new FakeTransport().on('POST', '/_apis/wit/wiql', { message: 'bad query' }, 400);
+      await expect(
+        new AzureDevOpsClient(http, resolver).queryWorkItems('c1', 'SELECT [System.Id] FROM WorkItems'),
+      ).rejects.toThrow(/failed \(400\)/);
+    });
+  });
 });
