@@ -8,6 +8,8 @@ import type { HarvestTimeEntry } from '@domain/harvest/harvest-types';
 import type { WorkItemRef } from '@domain/time/time-interval';
 import type { UpdateIntervalInput } from '@application/tracking-service';
 import { useContainer } from '@presentation/container-context';
+import { pollingIntervalMs } from '@presentation/lib/polling';
+import { useSettings } from '@presentation/hooks/use-settings';
 
 /** Fields the manual-entry modal supplies. */
 export interface ManualEntryInput {
@@ -22,14 +24,32 @@ export interface ManualEntryInput {
   readonly templateId?: Id;
 }
 
+/** Remote-sourced (ADO). Polls at `Settings.refreshIntervalMinutes`; off in demo mode. */
 export function useWorkItems() {
   const c = useContainer();
-  return useQuery({ queryKey: ['workItems'], queryFn: () => c.listWorkItems() });
+  const { data: settings } = useSettings();
+  const configured = c.isConfigured();
+  return useQuery({
+    queryKey: ['workItems'],
+    queryFn: () => c.listWorkItems(),
+    refetchInterval: configured ? pollingIntervalMs(settings?.refreshIntervalMinutes ?? 0) : false,
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: true,
+  });
 }
 
+/** Remote-sourced (calendar). Polls at `Settings.refreshIntervalMinutes`; off in demo mode. */
 export function useMeetings(date: IsoDate) {
   const c = useContainer();
-  return useQuery({ queryKey: ['meetings', date], queryFn: () => c.listMeetings(date) });
+  const { data: settings } = useSettings();
+  const configured = c.isConfigured();
+  return useQuery({
+    queryKey: ['meetings', date],
+    queryFn: () => c.listMeetings(date),
+    refetchInterval: configured ? pollingIntervalMs(settings?.refreshIntervalMinutes ?? 0) : false,
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: true,
+  });
 }
 
 export function useDayIntervals(date: IsoDate) {
