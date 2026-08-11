@@ -6,9 +6,9 @@ import type { HarvestProject, HarvestTimeEntry } from '@domain/harvest/harvest-t
 import { SystemClock } from '@infrastructure/system-clock';
 import type { AppRepositories } from '@infrastructure/persistence/app-repositories';
 import { createRepositories } from '@infrastructure/persistence/create-repositories';
-import { LocalSecretStore } from '@infrastructure/secrets/local-secret-store';
+import { createSecretStore } from '@composition/create-secret-store';
 import { createHttpTransport } from '@infrastructure/http/http-transport';
-import { WebRedirectOAuthService } from '@infrastructure/oauth/web-redirect-oauth-service';
+import { createOAuthService } from '@composition/create-oauth-service';
 import {
   ConnectionManager,
   type HarvestName,
@@ -76,13 +76,15 @@ export function createContainer(): Container {
   const clock = new SystemClock();
   const newId = () => crypto.randomUUID();
 
+  const transport = createHttpTransport();
+
   const connections = new ConnectionManager({
     settings: repos.settings,
     adoConnections: repos.adoConnections,
     calendarAccounts: repos.calendarAccounts,
-    secrets: new LocalSecretStore(),
-    transport: createHttpTransport(),
-    oauth: new WebRedirectOAuthService(),
+    secrets: createSecretStore(),
+    transport,
+    oauth: createOAuthService(transport),
     clock,
     newId,
   });

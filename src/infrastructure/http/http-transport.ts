@@ -1,4 +1,5 @@
 import type { HttpRequest, HttpResponse, IHttpTransport } from '@domain/ports';
+import { createTauriHttpTransport } from '@infrastructure/http/tauri-http-transport-factory';
 
 /** True when running inside the Tauri desktop shell (vs a plain browser). */
 export function isTauri(): boolean {
@@ -59,7 +60,6 @@ const DEV_PROXY_REWRITES: readonly HostRewrite[] = [
  * in a future native transport) requests go direct.
  */
 export function createHttpTransport(): IHttpTransport {
-  // TODO(desktop): return a Tauri HTTP plugin transport when isTauri().
-  const useDevProxy = !isTauri() && import.meta.env.DEV;
-  return new FetchHttpTransport(useDevProxy ? DEV_PROXY_REWRITES : []);
+  if (isTauri()) return createTauriHttpTransport();
+  return new FetchHttpTransport(import.meta.env.DEV ? DEV_PROXY_REWRITES : []);
 }

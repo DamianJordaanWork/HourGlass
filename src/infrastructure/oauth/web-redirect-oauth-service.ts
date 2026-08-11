@@ -1,5 +1,6 @@
 import type { IOAuthService, OAuthConfig, TokenSet } from '@domain/ports';
 import { generatePkcePair, generateState } from './pkce';
+import { toTokenSet, type TokenResponseDto } from './oauth-token';
 
 interface OAuthCallbackMessage {
   readonly type: 'hourglass-oauth-callback';
@@ -8,28 +9,12 @@ interface OAuthCallbackMessage {
   readonly error?: string;
 }
 
-interface TokenResponseDto {
-  access_token: string;
-  refresh_token?: string;
-  expires_in: number;
-  scope?: string;
-}
-
 function isCallbackMessage(data: unknown): data is OAuthCallbackMessage {
   return (
     typeof data === 'object' &&
     data !== null &&
     (data as { type?: unknown }).type === 'hourglass-oauth-callback'
   );
-}
-
-function toTokenSet(dto: TokenResponseDto): TokenSet {
-  return {
-    accessToken: dto.access_token,
-    refreshToken: dto.refresh_token,
-    expiresAt: Date.now() + dto.expires_in * 1000,
-    scope: dto.scope,
-  };
 }
 
 /**
