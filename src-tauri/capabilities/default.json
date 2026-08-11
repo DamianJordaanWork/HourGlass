@@ -6,6 +6,22 @@
     "main"
   ],
   "permissions": [
-    "core:default"
+    "core:default",
+    "sql:default",
+    "stronghold:default",
+    {
+      "identifier": "http:default",
+      "allow": [
+        "https://api.harvestapp.com/*",
+        "https://dev.azure.com/*",
+        "https://graph.microsoft.com/*",
+        "https://www.googleapis.com/*",
+        "https://openidconnect.googleapis.com/*",
+        "https://login.microsoftonline.com/*",
+        "https://accounts.google.com/*",
+        "https://oauth2.googleapis.com/*",
+        { "url": "http://localhost:*" }
+      ]
+    }
   ]
 }
