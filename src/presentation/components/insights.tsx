@@ -8,6 +8,7 @@ import { useDayIntervals, useNow } from '@presentation/hooks/use-tracking';
 import { useSettings } from '@presentation/hooks/use-settings';
 import { dayWindow } from '@presentation/lib/work-window';
 import { formatHours, longDayLabel, weekDays } from '@presentation/lib/format';
+import { TaskBreakdown } from '@presentation/components/task-breakdown';
 
 export function InsightsPane() {
   const { date } = useSelectedDay();
@@ -56,6 +57,11 @@ export function InsightsPane() {
         <Stat label="Productivity" value={`${Math.round(report.productivity * 100)}%`} />
         <Stat label="Dead time" value={formatHours(report.deadMinutes / 60)} />
         <Stat label="Context switches" value={String(report.contextSwitches)} />
+      </div>
+
+      <h3 className="mb-2 text-sm font-semibold text-muted">By task</h3>
+      <div className="mb-5">
+        <TaskBreakdown intervals={intervals ?? []} nowIso={nowDate.toISOString()} />
       </div>
 
       <div className="mb-2 flex items-center justify-between">

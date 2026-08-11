@@ -2,7 +2,15 @@
 
 _Update this after every work chunk. Newest status at top._
 
-## Current phase: **F8a done: aggregate-same-task-per-day roll-up (ADR-019), refining ADR-006/ADR-008. The `Settings.aggregateSameTaskPerDay` flag was already fully wired in settings/SQL from earlier work — this slice only changed `TrackingService` (`pushToHarvest`, `deleteInterval`) + added a pure `domain/services/rollup.ts` helper. Agent-tested (fakes); no port/schema/settings changes. Next: whatever the plan sequences next, or live-verify OAuth (both providers) once the user has real client registrations.**
+## Current phase: **Wave 3 progressing — F8a (roll-up) done, F8b (per-task Insights breakdown, ADR-020) done. F8b is read-only UI surfacing the existing `IntervalAggregator.groupByProjectTask` via a new pure selector + presentational component; no domain/aggregator/schema changes. Agent-tested. Next: whatever the plan sequences next, or live-verify OAuth (both providers) once the user has real client registrations.**
+
+## Snapshot (2026-08-11 — F8b: per-task Insights breakdown, ADR-020)
+- **F8b done, typecheck/test/build all green.** Small, read-only UI slice surfacing the already-existing `IntervalAggregator.groupByProjectTask` — no aggregator/domain/schema changes.
+- **New `src/presentation/lib/task-breakdown.ts`** (pure selector): `buildTaskBreakdown(intervals, nowIso) → TaskBreakdownRow[]` (`{ key, harvestProjectId?, label, hours, isRunning }`), sorted hours-descending; `label` = `${projectName} · ${taskName ?? ''}` or `'Unmapped'`. Co-located `task-breakdown.test.ts` (7 cases: group+sum, sort-desc, label format, Unmapped fallback, isRunning propagation, running-interval-to-nowIso measurement, empty input).
+- **New `src/presentation/components/task-breakdown.tsx`** (presentational): `TaskBreakdown({ intervals, nowIso })`, renders nothing when there are no rows; per-row tokenized card (`border-hairline`/`bg-surface`), per-project color stripe via the existing categorical `projectColor()` helper (not a semantic hue), `bg-accent animate-pulse` running dot, `.tabular` hours via `formatHours()`.
+- **Modified `src/presentation/components/insights.tsx`**: added a "By task" section (same header idiom as the existing "Gaps" section) between the stat-tile grid and the Gaps section, wired to the pane's existing `intervals`/`nowDate` variables — no new data fetching.
+- **Verified real output:** `npm run typecheck` — 0 errors. `npm run test` — **188 passing** (was 181, +7, all new in `task-breakdown.test.ts`). `npm run build` — green (`tsc -b && vite build`, same bundle shape, main JS chunk 465.00 kB).
+- **Open question / explicitly deferred:** external Harvest-only entries (never adopted locally per ADR-009) are not in the aggregator's input, so they're excluded from this breakdown too — consistent with the rest of the app, but worth remembering if a future "does this match what I see in Harvest" question comes up. A by-task strip on the Timesheet view (separate from Insights) was not requested and is deferred.
 
 ## Snapshot (2026-08-11 — F8a: aggregate-same-task-per-day roll-up, ADR-019)
 - **F8a done, typecheck/test/build all green. No port/schema/settings change** — the `aggregateSameTaskPerDay` flag and its SQL column were already wired by an earlier slice; this slice only touches `TrackingService` + adds one new pure domain file.
