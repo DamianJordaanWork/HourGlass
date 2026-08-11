@@ -25,6 +25,8 @@ import {
   weekDays,
 } from '@presentation/lib/format';
 import { projectColor } from '@presentation/lib/project-color';
+import { intervalsToCsv, intervalsToJson } from '@presentation/lib/export';
+import { downloadFile } from '@presentation/lib/download';
 
 const todayIso = () => toIsoDate(new Date());
 
@@ -127,6 +129,49 @@ type ModalState =
   | { mode: 'edit-harvest'; entry: HarvestTimeEntry }
   | null;
 
+/** Export current-day (and week, when available) intervals to CSV/JSON. */
+function ExportMenu({ date, intervals }: { date: IsoDate; intervals: readonly TimeInterval[] }) {
+  const [open, setOpen] = useState(false);
+  const container = useContainer();
+
+  const exportDay = (format: 'csv' | 'json') => {
+    const content = format === 'csv' ? intervalsToCsv(intervals) : intervalsToJson(intervals);
+    const mime = format === 'csv' ? 'text/csv' : 'application/json';
+    downloadFile(`hourglass-${date}.${format}`, content, mime);
+    setOpen(false);
+  };
+
+  const exportWeek = async (format: 'csv' | 'json') => {
+    const days = weekDays(date);
+    const weekIntervals = await container.repos.intervals.listByRange(days[0]!, days[6]!);
+    const content = format === 'csv' ? intervalsToCsv(weekIntervals) : intervalsToJson(weekIntervals);
+    const mime = format === 'csv' ? 'text/csv' : 'application/json';
+    downloadFile(`hourglass-week-of-${days[0]}.${format}`, content, mime);
+    setOpen(false);
+  };
+
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="rounded-md border border-hairline px-2.5 py-1 text-xs font-medium text-muted hover:text-ink"
+      >
+        Export
+      </button>
+      {open && (
+        <div className="absolute right-0 z-10 mt-1 w-40 rounded-md border border-hairline bg-elevated py-1 shadow-lg">
+          <div className="px-3 py-1 text-[10px] font-semibold uppercase text-muted">Day</div>
+          <button onClick={() => exportDay('csv')} className="block w-full px-3 py-1.5 text-left text-xs text-ink hover:bg-surface">CSV</button>
+          <button onClick={() => exportDay('json')} className="block w-full px-3 py-1.5 text-left text-xs text-ink hover:bg-surface">JSON</button>
+          <div className="mt-1 px-3 py-1 text-[10px] font-semibold uppercase text-muted">Week</div>
+          <button onClick={() => void exportWeek('csv')} className="block w-full px-3 py-1.5 text-left text-xs text-ink hover:bg-surface">CSV</button>
+          <button onClick={() => void exportWeek('json')} className="block w-full px-3 py-1.5 text-left text-xs text-ink hover:bg-surface">JSON</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function TimesheetPane() {
   const { date } = useSelectedDay();
   const { data: intervals } = useDayIntervals(date);
@@ -149,6 +194,7 @@ export function TimesheetPane() {
       <div className="mb-2 flex items-center justify-between">
         <h2 className="text-sm font-semibold text-muted">Entries</h2>
         <div className="flex items-center gap-3">
+          <ExportMenu date={date} intervals={sorted} />
           <button
             onClick={() => setModal({ mode: 'new' })}
             className="rounded-md border border-hairline px-2.5 py-1 text-xs font-medium text-muted hover:text-ink"
