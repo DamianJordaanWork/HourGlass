@@ -65,7 +65,7 @@ class FakeHarvest implements IHarvestClient {
   }
 }
 
-function makeService(clock: FakeClock, harvest?: FakeHarvest) {
+function makeService(clock: FakeClock, harvest?: FakeHarvest, adoGuid?: (connectionId: string) => Promise<string | undefined>) {
   const repos = createLocalRepositories(new MemoryStorage());
   let n = 0;
   const ado = { calls: [] as { id: string; wi: number; delta: number }[], async listAssignedWorkItems() { return []; }, async getWorkItem() { throw new Error('n/a'); }, async syncCompletedWork(id: string, wi: number, delta: number) { this.calls.push({ id, wi, delta }); } };
@@ -76,6 +76,7 @@ function makeService(clock: FakeClock, harvest?: FakeHarvest) {
     newId: () => `id-${++n}`,
     harvest: harvest ? () => harvest : undefined,
     ado: () => ado,
+    adoGuid,
   });
   return { service, repos, ado };
 }
@@ -132,6 +133,24 @@ describe('TrackingService', () => {
     expect(entry.notes).toContain('```hg1');
     expect(entry.externalReference?.id).toBe('AzureDevOps_UserStory_4821');
     expect(ado.calls).toEqual([{ id: 'c1', wi: 4821, delta: 1.5 }]);
+  });
+
+  it('with a learned adoGuid provider, splices the connection GUID into the external-reference id (ADR-021)', async () => {
+    const harvest = new FakeHarvest();
+    const GUID = '11111111-2222-3333-4444-555555555555';
+    const { service } = makeService(clock, harvest, async (connectionId) => (connectionId === 'c1' ? GUID : undefined));
+    const i = await service.startTracking({
+      date: '2026-08-03',
+      source: 'WorkItem',
+      harvestProjectId: 1,
+      harvestTaskId: 2,
+      workItemRef: { connectionId: 'c1', workItemId: 4821, workItemType: 'User Story', url: 'https://dev.azure.com/x/_workitems/edit/4821' },
+    });
+    clock.advance(3_600_000); // 1h
+    await service.stopTracking(i.id);
+
+    expect(harvest.created).toHaveLength(1);
+    expect(harvest.created[0]!.externalReference?.id).toBe(`AzureDevOps_${GUID}_UserStory_4821`);
   });
 
   it('logManualTime creates a completed entry from an explicit duration', async () => {

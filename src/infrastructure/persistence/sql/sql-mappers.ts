@@ -338,6 +338,7 @@ export interface AdoConnectionRow {
   readonly org_url: string;
   readonly iteration_path: string | null;
   readonly enabled: number;
+  readonly harvest_guid: string | null;
 }
 
 export function rowToAdoConnection(row: AdoConnectionRow): AdoConnection {
@@ -347,11 +348,12 @@ export function rowToAdoConnection(row: AdoConnectionRow): AdoConnection {
     orgUrl: row.org_url,
     iterationPath: nullToUndef(row.iteration_path),
     enabled: intToBool(row.enabled),
+    harvestGuid: nullToUndef(row.harvest_guid),
   };
 }
 
 export function adoConnectionParams(c: AdoConnection): readonly SqlParam[] {
-  return [c.id, c.label, c.orgUrl, undefToNull(c.iterationPath), boolToInt(c.enabled)];
+  return [c.id, c.label, c.orgUrl, undefToNull(c.iterationPath), boolToInt(c.enabled), undefToNull(c.harvestGuid)];
 }
 
 // ── Settings ─────────────────────────────────────────────────────────────

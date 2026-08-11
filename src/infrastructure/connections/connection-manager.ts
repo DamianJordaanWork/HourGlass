@@ -22,6 +22,7 @@ import {
   calendarRefreshKey,
   calendarTokenKey,
 } from '@domain/connections/connection';
+import { parseAdoConnectionGuid } from '@domain/harvest/ado-external-ref';
 import { HarvestClient } from '@infrastructure/harvest/harvest-client';
 import {
   AzureDevOpsClient,
@@ -176,6 +177,11 @@ export class ConnectionManager {
     const anyUsable = await this.hasUsableAdoConnection(connections);
     this.liveAdo = anyUsable ? new AzureDevOpsClient(this.deps.transport, this.adoResolver) : undefined;
 
+    // Best-effort: learn Harvest⇄ADO connection GUIDs from existing Harvest
+    // entries so ADO's official widget binds to entries Hourglass creates
+    // (ADR-021). Never throws.
+    await this.learnHarvestGuids();
+
     // Calendars — a shared source per provider; each enabled account maps to it.
     const calendarAccounts = await this.deps.calendarAccounts.list();
     const map = new Map<Id, ICalendarSource>();
@@ -215,6 +221,43 @@ export class ConnectionManager {
     await this.deps.settings.save({ ...settings, harvestAccountId: undefined });
     await this.deps.secrets.delete(HARVEST_TOKEN_KEY);
     await this.reconfigure();
+  }
+
+  /**
+   * Best-effort: scan a recent window of Harvest entries for external
+   * references created by ADO's official Harvest widget, parse the Harvest
+   * connection GUID out of any hit (ADR-021), and cache it on the matching
+   * {@link AdoConnection} (matched by the entry's permalink starting with the
+   * connection's org URL — the host alone isn't enough since every ADO org
+   * shares the `dev.azure.com` host) so future pushes splice it into the id
+   * ourselves. Never throws; a failure just leaves guids unlearned.
+   */
+  async learnHarvestGuids(): Promise<void> {
+    const harvest = this.liveHarvest;
+    if (!harvest) return;
+    try {
+      const to = toIsoDate(this.deps.clock.now());
+      const from = toIsoDate(new Date(this.deps.clock.now().getTime() - 90 * 24 * 60 * 60 * 1000));
+      const entries = await harvest.getTimeEntries(from, to);
+      const connections = await this.deps.adoConnections.list();
+      for (const entry of entries) {
+        const ref = entry.externalReference;
+        if (!ref) continue;
+        const guid = parseAdoConnectionGuid(ref.id);
+        if (!guid) continue;
+        const match = connections.find((c) => permalinkBelongsToOrg(ref.permalink, c.orgUrl));
+        if (!match || match.harvestGuid === guid) continue;
+        await this.deps.adoConnections.upsert({ ...match, harvestGuid: guid });
+      }
+    } catch (e) {
+      console.warn('[ado] learnHarvestGuids failed', e);
+    }
+  }
+
+  /** Resolves a connection's learned Harvest⇄ADO GUID (ADR-021), if any. */
+  async adoGuid(connectionId: Id): Promise<string | undefined> {
+    const connection = await this.deps.adoConnections.get(connectionId);
+    return connection?.harvestGuid;
   }
 
   // ── ADO connections ─────────────────────────────────────────────────────
@@ -541,3 +584,16 @@ export class ConnectionManager {
 }
 
 const errMsg = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+
+const toIsoDate = (d: Date): IsoDate => d.toISOString().slice(0, 10) as IsoDate;
+
+/**
+ * True when `permalink` points into the given ADO org. Matching on host alone
+ * isn't enough since every ADO org shares the `dev.azure.com` host — the org
+ * name lives in the first path segment, so we require the permalink to start
+ * with the connection's (normalized, trailing-slash-free) org URL.
+ */
+function permalinkBelongsToOrg(permalink: string, orgUrl: string): boolean {
+  const normalizedOrg = orgUrl.toLowerCase().replace(/\/+$/, '');
+  return permalink.toLowerCase().startsWith(`${normalizedOrg}/`);
+}

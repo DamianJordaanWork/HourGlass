@@ -12,6 +12,12 @@ export interface AdoConnection {
   /** Optional iteration filter, e.g. `LetsDrive\Sprint 12` (UNDER match). */
   readonly iterationPath?: string;
   readonly enabled: boolean;
+  /**
+   * Learned Harvest⇄ADO connection GUID, spliced into the external-reference id
+   * so ADO's official Harvest widget binds to entries Hourglass creates
+   * (F9/ADR-021). Undefined until observed on an existing Harvest entry.
+   */
+  readonly harvestGuid?: string;
 }
 
 /** Secret-store key for the Harvest personal access token. */

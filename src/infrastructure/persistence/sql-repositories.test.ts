@@ -273,6 +273,26 @@ describe('sql-repositories', () => {
       await repos.adoConnections.delete('a');
       expect(await repos.adoConnections.get('a')).toBeNull();
     });
+
+    it('round-trips harvestGuid (migration v3 column): set and undefined (NULL <-> undefined)', async () => {
+      const db = createInMemoryWasmDatabase();
+      const repos = createSqlRepositories(db);
+      const withGuid: AdoConnection = {
+        id: 'a',
+        label: 'Alpha',
+        orgUrl: 'https://x',
+        enabled: true,
+        harvestGuid: '11111111-2222-3333-4444-555555555555',
+      };
+      await repos.adoConnections.upsert(withGuid);
+      expect(await repos.adoConnections.get('a')).toEqual(withGuid);
+
+      const noGuid: AdoConnection = { id: 'b', label: 'Bravo', orgUrl: 'https://y', enabled: true };
+      await repos.adoConnections.upsert(noGuid);
+      const got = await repos.adoConnections.get('b');
+      expect(got?.harvestGuid).toBeUndefined();
+      expect(got).toEqual(noGuid);
+    });
   });
 
   describe('SettingsRepository', () => {

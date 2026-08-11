@@ -6,7 +6,8 @@ import type {
   ISettingsRepository,
   ITimeIntervalRepository,
 } from '@domain/ports';
-import type { ExternalReference, HarvestTimeEntry } from '@domain/harvest/harvest-types';
+import type { HarvestTimeEntry } from '@domain/harvest/harvest-types';
+import { buildAdoExternalReference } from '@domain/harvest/ado-external-ref';
 import { durationHours, type TimeInterval, type WorkItemRef } from '@domain/time/time-interval';
 import { Hg1, type Hg1Payload } from '@domain/harvest/hg1-metadata';
 import { codecFor } from '@domain/harvest/hg1-codec-registry';
@@ -67,6 +68,8 @@ export class TrackingService {
        */
       harvest?: () => IHarvestClient | undefined;
       ado?: () => IAzureDevOpsClient | undefined;
+      /** Resolves a learned Harvest⇄ADO connection GUID, if any (ADR-021). */
+      adoGuid?: (connectionId: string) => Promise<string | undefined>;
       warn?: SyncWarning;
     },
   ) {}
@@ -301,7 +304,10 @@ export class TrackingService {
     }
     const { embedMetadata: embed, hg1Scheme, aggregateSameTaskPerDay } = await this.deps.settings.get();
     const notes = embedMetadata(interval, embed, hg1Scheme);
-    const externalReference = interval.workItemRef ? refFor(interval.workItemRef) : undefined;
+    const guid = interval.workItemRef ? await this.deps.adoGuid?.(interval.workItemRef.connectionId) : undefined;
+    const externalReference = interval.workItemRef
+      ? buildAdoExternalReference(interval.workItemRef, guid)
+      : undefined;
 
     const dayIntervals = await this.deps.intervals.listByDate(interval.date);
     const { entryId, siblingHours } = resolveRollup({
@@ -375,15 +381,4 @@ function embedMetadata(interval: TimeInterval, enabled: boolean, scheme: Hg1Sche
   if (!worthEmbedding) return Hg1.strip(interval.notes);
   const payload: Hg1Payload = { v: 1, source: interval.source, templateId: interval.templateId };
   return Hg1.embed(interval.notes, payload, codecFor(scheme));
-}
-
-/** Harvest native external reference for an ADO work item (guid auto-learn is Phase 2). */
-function refFor(ref: WorkItemRef): ExternalReference {
-  const type = ref.workItemType.replace(/\s+/g, '');
-  return {
-    id: `AzureDevOps_${type}_${ref.workItemId}`,
-    groupId: 'AzureDevOpsWorkItem',
-    permalink: ref.url,
-    service: 'dev.azure.com',
-  };
 }

@@ -93,6 +93,7 @@ export function createContainer(): Container {
     // Live providers → undefined in demo mode, so sync is skipped silently.
     harvest: () => connections.harvest(),
     ado: () => connections.ado(),
+    adoGuid: (id) => connections.adoGuid(id),
     warn: (m) => console.warn('[sync]', m),
   });
 

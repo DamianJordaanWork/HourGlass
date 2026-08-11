@@ -235,7 +235,7 @@ class SqlAdoConnectionRepository implements IAdoConnectionRepository {
 
   async upsert(connection: AdoConnection): Promise<void> {
     await this.db.execute(
-      `INSERT OR REPLACE INTO ado_connection (id, label, org_url, iteration_path, enabled) VALUES (?, ?, ?, ?, ?)`,
+      `INSERT OR REPLACE INTO ado_connection (id, label, org_url, iteration_path, enabled, harvest_guid) VALUES (?, ?, ?, ?, ?, ?)`,
       adoConnectionParams(connection),
     );
   }

@@ -344,4 +344,121 @@ describe('ConnectionManager', () => {
       expect(await ctx.secrets.get(calendarTokenKey(account.id))).toBe('refreshed-google-token');
     });
   });
+
+  // ── ADR-021: ADO Harvest-connection-GUID auto-learn ─────────────────────
+  describe('learnHarvestGuids (ADR-021)', () => {
+    const GUID = '11111111-2222-3333-4444-555555555555';
+
+    async function activateHarvest(ctx2: ReturnType<typeof make>, entries: unknown[]) {
+      ctx2.transport.on('GET', '/project_assignments', HARVEST_ASSIGNMENTS);
+      ctx2.transport.on('GET', '/time_entries', { time_entries: entries });
+      await ctx2.manager.saveHarvest('123456', 'pat-token');
+    }
+
+    it('learns and caches the GUID from an existing Harvest entry created by ADO\'s widget', async () => {
+      await ctx.manager.saveAdo({ label: 'Agile Bridge', orgUrl: 'https://dev.azure.com/agile-bridge', enabled: false });
+      await activateHarvest(ctx, [
+        {
+          id: 1,
+          spent_date: '2026-08-01',
+          hours: 1,
+          notes: null,
+          project: { id: 1001, name: 'LetsDrive' },
+          task: { id: 10, name: 'Development' },
+          is_running: false,
+          external_reference: {
+            id: `AzureDevOps_${GUID}_UserStory_10`,
+            group_id: 'AzureDevOpsWorkItem',
+            permalink: 'https://dev.azure.com/agile-bridge/_workitems/edit/10',
+            service: 'dev.azure.com',
+          },
+        },
+      ]);
+
+      const [conn] = await ctx.manager.listAdo();
+      expect(conn!.harvestGuid).toBe(GUID);
+      expect(await ctx.manager.adoGuid(conn!.id)).toBe(GUID);
+    });
+
+    it('does not upsert when the entry\'s permalink host does not match any connection org', async () => {
+      await ctx.manager.saveAdo({ label: 'Agile Bridge', orgUrl: 'https://dev.azure.com/agile-bridge', enabled: false });
+      await activateHarvest(ctx, [
+        {
+          id: 1,
+          spent_date: '2026-08-01',
+          hours: 1,
+          notes: null,
+          project: { id: 1001, name: 'LetsDrive' },
+          task: { id: 10, name: 'Development' },
+          is_running: false,
+          external_reference: {
+            id: `AzureDevOps_${GUID}_UserStory_10`,
+            group_id: 'AzureDevOpsWorkItem',
+            permalink: 'https://dev.azure.com/some-other-org/_workitems/edit/10',
+            service: 'dev.azure.com',
+          },
+        },
+      ]);
+
+      const [conn] = await ctx.manager.listAdo();
+      expect(conn!.harvestGuid).toBeUndefined();
+      expect(await ctx.manager.adoGuid(conn!.id)).toBeUndefined();
+    });
+
+    it('a legacy (no-guid) external-reference id is ignored', async () => {
+      await ctx.manager.saveAdo({ label: 'Agile Bridge', orgUrl: 'https://dev.azure.com/agile-bridge', enabled: false });
+      await activateHarvest(ctx, [
+        {
+          id: 1,
+          spent_date: '2026-08-01',
+          hours: 1,
+          notes: null,
+          project: { id: 1001, name: 'LetsDrive' },
+          task: { id: 10, name: 'Development' },
+          is_running: false,
+          external_reference: {
+            id: 'AzureDevOps_UserStory_10',
+            group_id: 'AzureDevOpsWorkItem',
+            permalink: 'https://dev.azure.com/agile-bridge/_workitems/edit/10',
+            service: 'dev.azure.com',
+          },
+        },
+      ]);
+
+      const [conn] = await ctx.manager.listAdo();
+      expect(conn!.harvestGuid).toBeUndefined();
+    });
+
+    it('is idempotent: a second reconfigure with the same learned GUID does not change it', async () => {
+      await ctx.manager.saveAdo({ label: 'Agile Bridge', orgUrl: 'https://dev.azure.com/agile-bridge', enabled: false });
+      const entries = [
+        {
+          id: 1,
+          spent_date: '2026-08-01',
+          hours: 1,
+          notes: null,
+          project: { id: 1001, name: 'LetsDrive' },
+          task: { id: 10, name: 'Development' },
+          is_running: false,
+          external_reference: {
+            id: `AzureDevOps_${GUID}_UserStory_10`,
+            group_id: 'AzureDevOpsWorkItem',
+            permalink: 'https://dev.azure.com/agile-bridge/_workitems/edit/10',
+            service: 'dev.azure.com',
+          },
+        },
+      ];
+      await activateHarvest(ctx, entries);
+      const [conn] = await ctx.manager.listAdo();
+      expect(conn!.harvestGuid).toBe(GUID);
+
+      await ctx.manager.learnHarvestGuids();
+      const [connAgain] = await ctx.manager.listAdo();
+      expect(connAgain!.harvestGuid).toBe(GUID);
+    });
+
+    it('never throws even if Harvest is unconfigured', async () => {
+      await expect(ctx.manager.learnHarvestGuids()).resolves.toBeUndefined();
+    });
+  });
 });
