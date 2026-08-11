@@ -9,7 +9,13 @@ const host = process.env.TAURI_DEV_HOST;
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   optimizeDeps: {
-    exclude: ['sql.js'],
+    // sql.js is a UMD/CJS module whose browser entry (dist/sql-wasm-browser.js)
+    // only assigns `module.exports.default` at runtime — native ESM in the dev
+    // server can't see that export. Letting esbuild pre-bundle it synthesizes the
+    // interop `default` so `import initSqlJs from 'sql.js'` resolves in dev.
+    // (Excluding it here white-screened the app on `npm run dev`; build/test were
+    // unaffected because Rollup/createRequire handle CJS interop differently.)
+    include: ['sql.js'],
   },
   resolve: {
     alias: {
