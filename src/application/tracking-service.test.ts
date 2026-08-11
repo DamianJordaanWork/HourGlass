@@ -233,7 +233,7 @@ describe('TrackingService', () => {
     const harvest = new FakeHarvest();
     const { service } = makeService(clock, harvest);
     const i = await service.logManualTime({ date: '2026-08-03', source: 'Manual', harvestProjectId: 1, harvestTaskId: 2, hours: 1 });
-    const linked = await service.linkToHarvestEntry(i.id, 999, 1);
+    const { interval: linked } = await service.linkToHarvestEntry(i.id, 999, 1);
     expect(linked.harvestTimeEntryId).toBe(999);
     expect(linked.syncedHours).toBe(1);
     // Editing now UPDATES entry 999 (not create) and no phantom Harvest create.
@@ -241,6 +241,77 @@ describe('TrackingService', () => {
     await service.updateInterval(i.id, { notes: 'linked+edited' });
     expect(harvest.created.length).toBe(before);
     expect(harvest.updated.some((u) => u.id === 999)).toBe(true);
+  });
+
+  describe('linkToHarvestEntry reconciliation (ADR-022)', () => {
+    it('adopts Harvest hours as syncedHours (Harvest wins), makes no Harvest/ADO calls, and surfaces the divergence', async () => {
+      const harvest = new FakeHarvest();
+      const { service, ado } = makeService(clock, harvest);
+      // Local computed duration: 2.0h (09:00 -> 11:00).
+      const i = await service.logManualTime({
+        date: '2026-08-03',
+        source: 'Manual',
+        harvestProjectId: 1,
+        harvestTaskId: 2,
+        start: '2026-08-03T09:00:00.000Z',
+        end: '2026-08-03T11:00:00.000Z',
+      });
+      const createdBefore = harvest.created.length;
+      const updatedBefore = harvest.updated.length;
+
+      const result = await service.linkToHarvestEntry(i.id, 999, 1.5);
+
+      expect(result.interval.harvestTimeEntryId).toBe(999);
+      expect(result.interval.syncedHours).toBe(1.5); // Harvest wins, not the local 2.0h.
+      expect(result.interval.start).toBe(i.start); // local timing untouched
+      expect(result.interval.end).toBe(i.end);
+      expect(result.reconciled).toEqual({ localHours: 2, harvestHours: 1.5, adopted: 1.5, diverged: true });
+      // Linking itself never pushes to Harvest (it already has the entry) or ADO (no new logged time).
+      expect(harvest.created.length).toBe(createdBefore);
+      expect(harvest.updated.length).toBe(updatedBefore);
+      expect(ado.calls).toEqual([]);
+    });
+
+    it('reconciles with no divergence flag when hours already match within epsilon', async () => {
+      const { service } = makeService(clock);
+      const i = await service.logManualTime({
+        date: '2026-08-03',
+        source: 'Manual',
+        harvestProjectId: 1,
+        harvestTaskId: 2,
+        start: '2026-08-03T09:00:00.000Z',
+        end: '2026-08-03T10:30:00.000Z',
+      });
+      const result = await service.linkToHarvestEntry(i.id, 999, 1.5);
+      expect(result.reconciled).toEqual({ localHours: 1.5, harvestHours: 1.5, adopted: 1.5, diverged: false });
+    });
+
+    it('does not double-count on a later edit — the ADO delta is computed against the adopted syncedHours, not the local pre-link hours', async () => {
+      const harvest = new FakeHarvest();
+      const { service, ado } = makeService(clock, harvest);
+      const i = await service.startTracking({
+        date: '2026-08-03',
+        source: 'WorkItem',
+        harvestProjectId: 1,
+        harvestTaskId: 2,
+        workItemRef: { connectionId: 'c1', workItemId: 4821, workItemType: 'Task', url: 'u' },
+      });
+      clock.advance(2 * 3_600_000); // 2h computed locally
+      const stopped = await service.stopTracking(i.id);
+      // Simulate linking to an existing Harvest entry whose real hours are 1.5 (Harvest wins).
+      const { interval: linked } = await service.linkToHarvestEntry(stopped.id, 999, 1.5);
+      expect(linked.syncedHours).toBe(1.5);
+      const adoCallsAfterLink = ado.calls.length;
+
+      // Extend the entry to a new total of 3h.
+      const newEnd = new Date(new Date(linked.start).getTime() + 3 * 3_600_000).toISOString();
+      const edited = await service.updateInterval(i.id, { end: newEnd });
+
+      expect(edited.syncedHours).toBeCloseTo(3, 5);
+      // Delta = newHours(3) - adopted syncedHours(1.5) = 1.5, NOT 3 - 2 = 1 (which would double-count
+      // the 2h originally computed locally before the link adopted Harvest's 1.5h as truth).
+      expect(ado.calls[adoCallsAfterLink]).toEqual({ id: 'c1', wi: 4821, delta: 1.5 });
+    });
   });
 
   it('refuses to start, log, or save an entry without a Harvest project+task (source of truth)', async () => {

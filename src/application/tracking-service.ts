@@ -49,6 +49,31 @@ export interface UpdateIntervalInput {
 /** Non-fatal sync problems are surfaced but never block local persistence. */
 export type SyncWarning = (message: string) => void;
 
+/** Hours differing by more than this (in hours) are considered a real divergence, not float noise. */
+const HOURS_EPSILON = 0.01;
+
+/**
+ * Reconciliation outcome of linking a local interval to an existing Harvest
+ * entry (ADR-022): Harvest's hours are always adopted; `diverged` flags when
+ * the interval's own computed duration disagreed, so the UI can inform the
+ * user without the service silently rewriting local timing.
+ */
+export interface HoursReconciliation {
+  /** The interval's own computed duration (start/end), when it has one (not running). */
+  readonly localHours: number;
+  /** The Harvest entry's hours — always adopted as `syncedHours`. */
+  readonly harvestHours: number;
+  /** The hours adopted as `syncedHours` (always equals `harvestHours` — Harvest wins). */
+  readonly adopted: number;
+  /** True when `localHours` disagreed with `harvestHours` beyond `HOURS_EPSILON`. */
+  readonly diverged: boolean;
+}
+
+export interface LinkToHarvestResult {
+  readonly interval: TimeInterval;
+  readonly reconciled: HoursReconciliation;
+}
+
 /**
  * The core tracking use cases. SQLite/local is the source of truth; every
  * Harvest/ADO call is best-effort (failures warn, never throw). Each Start
@@ -240,8 +265,18 @@ export class TrackingService {
     return interval;
   }
 
-  /** Link a local interval to an existing Harvest entry so future syncs update it. */
-  async linkToHarvestEntry(intervalId: Id, harvestEntryId: number, entryHours: number): Promise<TimeInterval> {
+  /**
+   * Link a local interval to an existing Harvest entry so future syncs update
+   * it. Harvest is the source of truth (ADR-009/022): `entryHours` is adopted
+   * as `syncedHours` so the next edit's ADO delta is computed against Harvest's
+   * real total, not the local interval's own (possibly divergent) computed
+   * duration — no Harvest write happens here, Harvest already has the entry.
+   * Local `start`/`end` are left untouched (analytics timing is preserved);
+   * any divergence between the interval's own duration and Harvest's hours is
+   * surfaced via the returned `reconciled` field for the UI to show, never
+   * silently resolved by rewriting local timing.
+   */
+  async linkToHarvestEntry(intervalId: Id, harvestEntryId: number, entryHours: number): Promise<LinkToHarvestResult> {
     const current = await this.deps.intervals.get(intervalId);
     if (!current) throw new Error(`Interval not found: ${intervalId}`);
     const now = this.deps.clock.nowIso();
@@ -252,7 +287,12 @@ export class TrackingService {
       updatedAt: now,
     };
     await this.deps.intervals.upsert(linked);
-    return linked;
+    const localHours = round2(durationHours(current, now));
+    const diverged = current.end !== undefined && Math.abs(localHours - entryHours) > HOURS_EPSILON;
+    return {
+      interval: linked,
+      reconciled: { localHours, harvestHours: entryHours, adopted: entryHours, diverged },
+    };
   }
 
   async deleteInterval(id: Id): Promise<void> {

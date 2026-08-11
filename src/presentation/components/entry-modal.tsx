@@ -261,7 +261,21 @@ function LinkPicker({ date, intervalId, onLinked }: { date: IsoDate; intervalId:
         <li key={e.id}>
           <button
             className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs hover:bg-elevated"
-            onClick={() => actions.linkHarvest.mutate({ intervalId, entry: e }, { onSuccess: onLinked })}
+            onClick={() =>
+              actions.linkHarvest.mutate(
+                { intervalId, entry: e },
+                {
+                  onSuccess: (result) => {
+                    if (result.reconciled.diverged) {
+                      window.alert(
+                        `Linked. Harvest's hours (${formatHours(result.reconciled.harvestHours)}) differ from this entry's tracked time (${formatHours(result.reconciled.localHours)}) — Harvest's hours were kept.`,
+                      );
+                    }
+                    onLinked();
+                  },
+                },
+              )
+            }
           >
             <span className="min-w-0 flex-1 truncate text-ink">{e.projectName} · {e.taskName}</span>
             <span className="tabular shrink-0 text-muted">{formatHours(e.hours)}</span>
