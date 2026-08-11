@@ -5,7 +5,7 @@ import type { Meeting } from '@domain/calendar/meeting';
 import type { HarvestProject, HarvestTimeEntry } from '@domain/harvest/harvest-types';
 import { SystemClock } from '@infrastructure/system-clock';
 import type { AppRepositories } from '@infrastructure/persistence/app-repositories';
-import { createWebRepositories } from '@infrastructure/persistence/create-web-repositories';
+import { createRepositories } from '@infrastructure/persistence/create-repositories';
 import { LocalSecretStore } from '@infrastructure/secrets/local-secret-store';
 import { createHttpTransport } from '@infrastructure/http/http-transport';
 import { WebRedirectOAuthService } from '@infrastructure/oauth/web-redirect-oauth-service';
@@ -64,11 +64,13 @@ export interface Container {
  */
 export function createContainer(): Container {
   // Web: WASM SQLite (IndexedDB-backed) with a localStorage fallback + one-time
-  // import, behind a synchronous facade — see createWebRepositories(). F4 seam:
-  // on desktop (isTauri()), this swaps for createSqlRepositories() wired to a
-  // Tauri-sql-backed ISqlDatabase instead of WasmSqlDatabase; the repos/facade
-  // layer above is unchanged either way.
-  const { repos, ready: reposReady } = createWebRepositories();
+  // import, behind a synchronous facade. Desktop (isTauri()): native SQLite via
+  // `@tauri-apps/plugin-sql`, wired through the same createSqlRepositories();
+  // no localStorage import (fresh desktop installs have nothing to import).
+  // Both branches share the repos/facade layer above — see
+  // createRepositories() (F4, now wired; desktop path not yet run — see
+  // ADR-015 and active-memory.md).
+  const { repos, ready: reposReady } = createRepositories();
   const clock = new SystemClock();
   const newId = () => crypto.randomUUID();
 

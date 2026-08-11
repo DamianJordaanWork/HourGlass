@@ -16,6 +16,7 @@
   "dependencies": {
     "@tanstack/react-query": "^5.62.0",
     "@tauri-apps/api": "^2.1.1",
+    "@tauri-apps/plugin-sql": "^2.4.0",
     "clsx": "^2.1.1",
     "date-fns": "^4.1.0",
     "ical.js": "^2.2.1",
