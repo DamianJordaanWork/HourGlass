@@ -11,7 +11,9 @@ import { TemplatesPane } from '@presentation/components/templates';
 import { SettingsPane } from '@presentation/components/settings';
 import { EntryModal } from '@presentation/components/entry-modal';
 import { OAuthCallback, isOAuthCallback } from '@presentation/components/oauth-callback';
+import { CommandPalette } from '@presentation/components/command-palette';
 import { useConnectionStatus } from '@presentation/hooks/use-connections';
+import { useCommandPalette } from '@presentation/hooks/use-command-palette';
 import { useEntryModalStore } from '@presentation/state/entry-modal';
 import { useSelectedDay } from '@presentation/state/selected-day';
 
@@ -31,6 +33,7 @@ function Shell() {
   const { date } = useSelectedDay();
   const prefill = useEntryModalStore((s) => s.prefill);
   const closeEntryModal = useEntryModalStore((s) => s.close);
+  const palette = useCommandPalette();
 
   useEffect(() => {
     void container.ready.then(() => qc.invalidateQueries());
@@ -55,6 +58,7 @@ function Shell() {
       </div>
       {/* Global: opened whenever a Start/Log has no resolved Harvest mapping yet. */}
       {prefill && <EntryModal mode="new" date={date} prefill={prefill} onClose={closeEntryModal} />}
+      <CommandPalette open={palette.open} onClose={palette.close} commands={palette.commands} />
     </div>
   );
 }
