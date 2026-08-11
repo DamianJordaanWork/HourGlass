@@ -8,6 +8,9 @@ const host = process.env.TAURI_DEV_HOST;
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  optimizeDeps: {
+    exclude: ['sql.js'],
+  },
   resolve: {
     alias: {
       '@domain': fileURLToPath(new URL('./src/domain', import.meta.url)),
@@ -60,5 +63,10 @@ export default defineConfig({
     environment: 'jsdom',
     setupFiles: ['./src/test/setup.ts'],
     include: ['src/**/*.{test,spec}.{ts,tsx}'],
+    server: {
+      deps: {
+        inline: ['sql.js'],
+      },
+    },
   },
 });

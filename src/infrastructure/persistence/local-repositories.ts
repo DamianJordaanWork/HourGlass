@@ -16,9 +16,10 @@ import type { MappingRule } from '@domain/templates/mapping';
 import type { QuickTemplate } from '@domain/templates/quick-template';
 import type { CalendarAccount, Meeting } from '@domain/calendar/meeting';
 import { DEFAULT_SETTINGS, type Settings } from '@domain/settings/settings';
+import type { AppRepositories } from '@infrastructure/persistence/app-repositories';
 import { LocalCollection, LocalValue, defaultStorage, type StorageLike } from './local-store';
 
-const KEY = {
+export const KEY = {
   intervals: 'hourglass.intervals',
   mappingRules: 'hourglass.mappingRules',
   calendarAccounts: 'hourglass.calendarAccounts',
@@ -139,7 +140,7 @@ export class SettingsRepository implements ISettingsRepository {
   }
 }
 
-export interface LocalRepositories {
+export interface LocalRepositories extends AppRepositories {
   readonly intervals: TimeIntervalRepository;
   readonly mappingRules: MappingRuleRepository;
   readonly calendarAccounts: CalendarAccountRepository;

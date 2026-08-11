@@ -22,6 +22,7 @@
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-router-dom": "^6.28.0",
+    "sql.js": "^1.14.1",
     "zustand": "^5.0.2"
   },
   "devDependencies": {
@@ -32,6 +33,7 @@
     "@types/node": "^22.20.1",
     "@types/react": "^18.3.14",
     "@types/react-dom": "^18.3.5",
+    "@types/sql.js": "^1.4.11",
     "@vitejs/plugin-react": "^4.3.4",
     "jsdom": "^25.0.1",
     "tailwindcss": "^4.0.0",

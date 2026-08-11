@@ -3,7 +3,7 @@ import type { WorkItem } from '@domain/work-items/work-item';
 import type { Meeting } from '@domain/calendar/meeting';
 import type { MappingRule } from '@domain/templates/mapping';
 import type { QuickTemplate } from '@domain/templates/quick-template';
-import type { LocalRepositories } from '@infrastructure/persistence/local-repositories';
+import type { AppRepositories } from '@infrastructure/persistence/app-repositories';
 
 const CONN = 'demo';
 
@@ -37,7 +37,7 @@ const demoQuickTemplates: QuickTemplate[] = [
 ];
 
 /** Seed mapping rules + quick templates the first time (so the rail is meaningful). */
-export async function seedDemo(repos: LocalRepositories): Promise<void> {
+export async function seedDemo(repos: AppRepositories): Promise<void> {
   if ((await repos.mappingRules.list()).length === 0) {
     for (const r of demoMappingRules) await repos.mappingRules.upsert(r);
   }
@@ -60,7 +60,7 @@ const PLACEHOLDER_HARVEST_IDS = new Set<number>([
  * to a non-existent Harvest project (which Harvest rejects with a 422). Rules
  * the user has re-targeted to a real project id are left untouched.
  */
-export async function clearBrokenDemoSeed(repos: LocalRepositories): Promise<number> {
+export async function clearBrokenDemoSeed(repos: AppRepositories): Promise<number> {
   let removed = 0;
   for (const r of await repos.mappingRules.list()) {
     if (DEMO_RULE_IDS.has(r.id) && PLACEHOLDER_HARVEST_IDS.has(r.target.harvestProjectId)) {

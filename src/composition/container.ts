@@ -4,10 +4,8 @@ import type { WorkItem } from '@domain/work-items/work-item';
 import type { Meeting } from '@domain/calendar/meeting';
 import type { HarvestProject, HarvestTimeEntry } from '@domain/harvest/harvest-types';
 import { SystemClock } from '@infrastructure/system-clock';
-import {
-  createLocalRepositories,
-  type LocalRepositories,
-} from '@infrastructure/persistence/local-repositories';
+import type { AppRepositories } from '@infrastructure/persistence/app-repositories';
+import { createWebRepositories } from '@infrastructure/persistence/create-web-repositories';
 import { LocalSecretStore } from '@infrastructure/secrets/local-secret-store';
 import { createHttpTransport } from '@infrastructure/http/http-transport';
 import { WebRedirectOAuthService } from '@infrastructure/oauth/web-redirect-oauth-service';
@@ -36,7 +34,7 @@ export type {
 } from '@infrastructure/connections/connection-manager';
 
 export interface Container {
-  readonly repos: LocalRepositories;
+  readonly repos: AppRepositories;
   readonly clock: IClock;
   readonly tracking: TrackingService;
   readonly mapping: MappingService;
@@ -65,7 +63,12 @@ export interface Container {
  * `npm run dev` works without credentials.
  */
 export function createContainer(): Container {
-  const repos = createLocalRepositories();
+  // Web: WASM SQLite (IndexedDB-backed) with a localStorage fallback + one-time
+  // import, behind a synchronous facade — see createWebRepositories(). F4 seam:
+  // on desktop (isTauri()), this swaps for createSqlRepositories() wired to a
+  // Tauri-sql-backed ISqlDatabase instead of WasmSqlDatabase; the repos/facade
+  // layer above is unchanged either way.
+  const { repos, ready: reposReady } = createWebRepositories();
   const clock = new SystemClock();
   const newId = () => crypto.randomUUID();
 
@@ -106,7 +109,7 @@ export function createContainer(): Container {
     // Reconfigure first so we know whether we're connected, THEN either seed demo
     // samples (unconfigured) or strip any leftover placeholder-id samples that
     // would otherwise 422 against real Harvest.
-    ready: connections.reconfigure().then(async () => {
+    ready: reposReady.then(() => connections.reconfigure()).then(async () => {
       if (isConfigured()) {
         const removed = await clearBrokenDemoSeed(repos);
         if (removed > 0) console.info(`[demo] removed ${removed} sample mapping(s) with placeholder Harvest ids`);
