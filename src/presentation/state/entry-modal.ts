@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import type { Id, TrackingSource } from '@domain/common/types';
-import type { WorkItemRef } from '@domain/time/time-interval';
+import type { WorkItemLink } from '@domain/time/time-interval';
 
 /**
  * Context carried into the new-entry modal when a Start/Log action has no
@@ -12,7 +12,7 @@ import type { WorkItemRef } from '@domain/time/time-interval';
 export interface NewEntryPrefill {
   readonly source: TrackingSource;
   readonly notes?: string;
-  readonly workItemRef?: WorkItemRef;
+  readonly workItemLinks?: readonly WorkItemLink[];
   readonly templateId?: Id;
   /** Pre-fills the duration (e.g. a meeting's length for "Log"); omitted ⇒ live timer. */
   readonly initialDurationHours?: number;

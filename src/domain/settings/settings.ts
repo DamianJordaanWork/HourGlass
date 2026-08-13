@@ -32,6 +32,12 @@ export interface Settings {
    * reserved for a future real-encryption scheme and is not yet available.
    */
   readonly hg1Scheme: Hg1Scheme;
+  /**
+   * Fetch the parent User Story of any assigned Task whose story wasn't itself
+   * returned, so the rail can nest it (one extra request per connection, one
+   * level only — see ADR-030).
+   */
+  readonly fetchParentWorkItems: boolean;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -46,4 +52,5 @@ export const DEFAULT_SETTINGS: Settings = {
   aggregateSameTaskPerDay: false,
   embedMetadata: false,
   hg1Scheme: 'plain',
+  fetchParentWorkItems: true,
 };

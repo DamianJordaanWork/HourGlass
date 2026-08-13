@@ -8,7 +8,15 @@ import type {
 } from '@domain/ports';
 import type { HarvestTimeEntry } from '@domain/harvest/harvest-types';
 import { buildAdoExternalReference } from '@domain/harvest/ado-external-ref';
-import { durationHours, type TimeInterval, type WorkItemRef } from '@domain/time/time-interval';
+import {
+  durationHours,
+  normalizeWorkItemLinks,
+  workItemLinksOf,
+  type TimeInterval,
+  type WorkItemLink,
+  type WorkItemRef,
+} from '@domain/time/time-interval';
+import { allocateHours } from '@domain/services/work-item-allocation';
 import { Hg1, type Hg1Payload } from '@domain/harvest/hg1-metadata';
 import { codecFor } from '@domain/harvest/hg1-codec-registry';
 import type { Hg1Scheme } from '@domain/harvest/hg1-codec';
@@ -24,6 +32,8 @@ export interface StartInput {
   readonly taskName?: string;
   readonly notes?: string;
   readonly workItemRef?: WorkItemRef;
+  /** Every ticket worked on, primary first. Takes precedence over `workItemRef`. */
+  readonly workItemLinks?: readonly WorkItemLink[];
   readonly templateId?: Id;
 }
 
@@ -44,6 +54,8 @@ export interface UpdateIntervalInput {
   readonly notes?: string;
   readonly start?: IsoDateTime;
   readonly end?: IsoDateTime;
+  /** Replaces the whole list; `[]` clears every ticket. */
+  readonly workItemLinks?: readonly WorkItemLink[];
 }
 
 /** Non-fatal sync problems are surfaced but never block local persistence. */
@@ -116,7 +128,7 @@ export class TrackingService {
       if (running) await this.stopTracking(running.id);
     }
     const now = this.deps.clock.nowIso();
-    const interval: TimeInterval = {
+    const interval: TimeInterval = normalizeWorkItemLinks({
       id: this.deps.newId(),
       date: input.date,
       harvestProjectId: input.harvestProjectId,
@@ -129,10 +141,11 @@ export class TrackingService {
       isManual: false,
       source: input.source,
       workItemRef: input.workItemRef,
+      workItemLinks: input.workItemLinks,
       templateId: input.templateId,
       createdAt: now,
       updatedAt: now,
-    };
+    });
     await this.deps.intervals.upsert(interval);
     return interval;
   }
@@ -161,7 +174,7 @@ export class TrackingService {
       (input.hours !== undefined
         ? new Date(new Date(start).getTime() + input.hours * 3_600_000).toISOString()
         : now);
-    const interval: TimeInterval = {
+    const interval: TimeInterval = normalizeWorkItemLinks({
       id: this.deps.newId(),
       date: input.date,
       harvestProjectId: input.harvestProjectId,
@@ -174,10 +187,11 @@ export class TrackingService {
       isManual: true,
       source: input.source,
       workItemRef: input.workItemRef,
+      workItemLinks: input.workItemLinks,
       templateId: input.templateId,
       createdAt: now,
       updatedAt: now,
-    };
+    });
     const hours = round2(input.hours ?? durationHours(interval, now));
     const synced = await this.pushToHarvest(interval, hours);
     await this.deps.intervals.upsert(synced);
@@ -189,12 +203,15 @@ export class TrackingService {
     const current = await this.deps.intervals.get(id);
     if (!current) throw new Error(`Interval not found: ${id}`);
     const now = this.deps.clock.nowIso();
-    const merged: TimeInterval = {
+    const merged: TimeInterval = normalizeWorkItemLinks({
       ...current,
       ...definedOnly(patch),
+      // A supplied list replaces the lot, so drop the stale primary first —
+      // otherwise normalize would resurrect it when the list is empty.
+      ...(patch.workItemLinks !== undefined ? { workItemRef: undefined } : {}),
       isManual: true,
       updatedAt: now,
-    };
+    });
     requireMapping(merged.harvestProjectId, merged.harvestTaskId);
     const hours = round2(durationHours(merged, now));
     const synced = await this.pushToHarvest(merged, hours);
@@ -280,12 +297,20 @@ export class TrackingService {
     const current = await this.deps.intervals.get(intervalId);
     if (!current) throw new Error(`Interval not found: ${intervalId}`);
     const now = this.deps.clock.nowIso();
-    const linked: TimeInterval = {
+    // Harvest wins for the ADO baseline too: re-spread the adopted hours over the
+    // linked tickets so the next edit's per-ticket delta is measured from what
+    // Harvest actually holds, not from a stale local figure.
+    const rebaselined = allocateHours(entryHours, workItemLinksOf(current)).map(({ link, hours }) => ({
+      ...link,
+      syncedHours: hours,
+    }));
+    const linked: TimeInterval = normalizeWorkItemLinks({
       ...current,
+      workItemLinks: rebaselined.length > 0 ? rebaselined : undefined,
       harvestTimeEntryId: harvestEntryId,
       syncedHours: entryHours,
       updatedAt: now,
-    };
+    });
     await this.deps.intervals.upsert(linked);
     const localHours = round2(durationHours(current, now));
     const diverged = current.end !== undefined && Math.abs(localHours - entryHours) > HOURS_EPSILON;
@@ -316,15 +341,18 @@ export class TrackingService {
       }
     }
     const ado = this.deps.ado?.();
-    if (ado && existing?.workItemRef && existing.syncedHours) {
-      try {
-        await ado.syncCompletedWork(
-          existing.workItemRef.connectionId,
-          existing.workItemRef.workItemId,
-          round2(-existing.syncedHours),
-        );
-      } catch (e) {
-        this.warn(`ADO CompletedWork sync failed: ${errMsg(e)}`);
+    if (ado && existing) {
+      // Give every ticket back exactly what it was credited. Pre-multi-ticket
+      // intervals have no per-link figure, so fall back to the interval total.
+      const links = workItemLinksOf(existing);
+      for (const link of links) {
+        const credited = link.syncedHours ?? (links.length === 1 ? existing.syncedHours : undefined);
+        if (!credited) continue;
+        try {
+          await ado.syncCompletedWork(link.connectionId, link.workItemId, round2(-credited));
+        } catch (e) {
+          this.warn(`ADO CompletedWork sync failed (#${link.workItemId}): ${errMsg(e)}`);
+        }
       }
     }
   }
@@ -377,19 +405,36 @@ export class TrackingService {
       this.warn(`Harvest sync failed (kept locally): ${errMsg(e)}`);
     }
 
-    if (ado && interval.workItemRef) {
-      // Sync only the change since the last push so edits don't double-count.
-      const delta = round2(hours - (interval.syncedHours ?? 0));
+    // Each ticket gets its own share of the hours and its own delta, so an edit
+    // never double-counts and tickets added later don't back-date the others.
+    const links = workItemLinksOf(interval);
+    const syncedLinks: WorkItemLink[] = [];
+    for (const { link, hours: allocated } of allocateHours(hours, links)) {
+      // Without a live client nothing was pushed, so `syncedHours` must not move
+      // — otherwise the first real sync would skip the hours accrued offline.
+      if (!ado) {
+        syncedLinks.push(link);
+        continue;
+      }
+      const delta = round2(allocated - (link.syncedHours ?? 0));
       if (delta !== 0) {
         try {
-          await ado.syncCompletedWork(interval.workItemRef.connectionId, interval.workItemRef.workItemId, delta);
+          await ado.syncCompletedWork(link.connectionId, link.workItemId, delta);
         } catch (e) {
-          this.warn(`ADO CompletedWork sync failed: ${errMsg(e)}`);
+          this.warn(`ADO CompletedWork sync failed (#${link.workItemId}): ${errMsg(e)}`);
+          syncedLinks.push(link); // keep the old figure so the delta is retried next push
+          continue;
         }
       }
+      syncedLinks.push({ ...link, syncedHours: allocated });
     }
 
-    return { ...interval, harvestTimeEntryId, syncedHours: hours };
+    return normalizeWorkItemLinks({
+      ...interval,
+      workItemLinks: syncedLinks.length > 0 ? syncedLinks : undefined,
+      harvestTimeEntryId,
+      syncedHours: hours,
+    });
   }
 
   private warn(message: string): void {

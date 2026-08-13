@@ -8,6 +8,7 @@ import type { QuickTemplate } from '@domain/templates/quick-template';
 import type { Note } from '@domain/notes/note';
 import type { AdoConnection } from '@domain/connections/connection';
 import { DEFAULT_SETTINGS } from '@domain/settings/settings';
+import { DEFAULT_SECTION_ORDERING, type WorkItemSection } from '@domain/work-items/work-item-section';
 
 function interval(id: string, date: string, overrides: Partial<TimeInterval> = {}): TimeInterval {
   return {
@@ -76,21 +77,35 @@ describe('sql-repositories', () => {
       await repos.intervals.upsert(finished);
 
       const gotRunning = await repos.intervals.get('running');
-      expect(gotRunning).toEqual(running);
+      const workItem = { connectionId: 'c1', workItemId: 42, workItemType: 'Bug', url: 'https://x' };
+      // A single-ticket interval reads back with the list populated too (ADR-029).
+      expect(gotRunning).toEqual({ ...running, workItemLinks: [workItem] });
       expect(gotRunning?.end).toBeUndefined();
-      expect(gotRunning?.workItemRef).toEqual({
-        connectionId: 'c1',
-        workItemId: 42,
-        workItemType: 'Bug',
-        url: 'https://x',
-      });
+      expect(gotRunning?.workItemRef).toEqual(workItem);
 
       const currentlyRunning = await repos.intervals.getRunning();
       expect(currentlyRunning?.id).toBe('running');
 
       const finishedRow = await repos.intervals.get('finished');
       expect(finishedRow?.workItemRef).toBeUndefined();
+      expect(finishedRow?.workItemLinks).toBeUndefined();
       expect(finishedRow?.end).toBe('2026-08-11T10:00:00Z');
+    });
+
+    it('round-trips several tickets with their own hours, primary first', async () => {
+      const db = createInMemoryWasmDatabase();
+      const repos = createSqlRepositories(db);
+      const links = [
+        { connectionId: 'c1', workItemId: 11, workItemType: 'Task', url: 'https://x/11', title: 'First', hours: 1.5, syncedHours: 1.5 },
+        { connectionId: 'c1', workItemId: 22, workItemType: 'Bug', url: 'https://x/22' },
+      ];
+
+      await repos.intervals.upsert(interval('multi', '2026-08-11', { end: '2026-08-11T11:00:00Z', workItemLinks: links }));
+
+      const got = await repos.intervals.get('multi');
+      expect(got?.workItemLinks).toEqual(links);
+      // The primary is mirrored into the legacy column for the Harvest reference.
+      expect(got?.workItemRef).toEqual({ connectionId: 'c1', workItemId: 11, workItemType: 'Task', url: 'https://x/11' });
     });
 
     it('listByDate orders by start_time; listByRange spans dates', async () => {
@@ -166,6 +181,54 @@ describe('sql-repositories', () => {
       const conditionRows = await db.query('SELECT * FROM mapping_condition WHERE rule_id = ?', ['r1']);
       expect(conditionRows).toEqual([]);
       expect(await repos.mappingRules.list()).toEqual([]);
+    });
+  });
+
+  describe('WorkItemSectionRepository', () => {
+    const section = (id: string, sortOrder: number, over: Partial<WorkItemSection> = {}): WorkItemSection => ({
+      id,
+      label: id,
+      conditions: [],
+      sortOrder,
+      enabled: true,
+      defaultCollapsed: false,
+      ...DEFAULT_SECTION_ORDERING,
+      ...over,
+    });
+
+    it('orders by sortOrder and round-trips conditions + ordering flags', async () => {
+      const db = createInMemoryWasmDatabase();
+      const repos = createSqlRepositories(db);
+      const first = section('s2', 10, {
+        conditions: [
+          { field: 'workItemType', operator: 'in', value: 'Bug, Task' },
+          { field: 'state', operator: 'equals', value: 'Closed', negate: true },
+        ],
+        sortBy: 'title',
+        sortDirection: 'desc',
+        groupByParent: false,
+        defaultCollapsed: true,
+      });
+
+      await repos.workItemSections.upsert(section('s1', 20));
+      await repos.workItemSections.upsert(first);
+
+      const list = await repos.workItemSections.list();
+      expect(list.map((s) => s.id)).toEqual(['s2', 's1']);
+      expect(list[0]).toEqual(first);
+    });
+
+    it('re-upserting replaces the condition set, and delete cascades', async () => {
+      const db = createInMemoryWasmDatabase();
+      const repos = createSqlRepositories(db);
+
+      await repos.workItemSections.upsert(section('s1', 10, { conditions: [{ field: 'a', operator: 'equals', value: '1' }] }));
+      await repos.workItemSections.upsert(section('s1', 10, { conditions: [{ field: 'b', operator: 'equals', value: '2' }] }));
+      expect((await repos.workItemSections.list())[0]?.conditions).toEqual([{ field: 'b', operator: 'equals', value: '2' }]);
+
+      await repos.workItemSections.delete('s1');
+      expect(await db.query('SELECT * FROM work_item_section_condition WHERE section_id = ?', ['s1'])).toEqual([]);
+      expect(await repos.workItemSections.list()).toEqual([]);
     });
   });
 

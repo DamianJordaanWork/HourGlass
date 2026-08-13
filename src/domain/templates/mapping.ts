@@ -127,10 +127,19 @@ function conditionMatches(condition: MappingCondition, context: MatchContext): b
   return condition.negate ? !result : result;
 }
 
+/**
+ * True if every condition matches (empty conditions ⇒ true). Exposed on its own
+ * so anything with a condition list — mapping rules, work-item sections — can
+ * share the one predicate engine rather than growing a second filter model.
+ */
+export function conditionsMatch(conditions: readonly MappingCondition[], context: MatchContext): boolean {
+  return conditions.every((c) => conditionMatches(c, context));
+}
+
 export const TemplateMatcher = {
   /** True if every condition matches (empty conditions ⇒ true). */
   ruleMatches(rule: MappingRule, context: MatchContext): boolean {
-    return rule.conditions.every((c) => conditionMatches(c, context));
+    return conditionsMatch(rule.conditions, context);
   },
 
   /**

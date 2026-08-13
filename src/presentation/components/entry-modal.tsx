@@ -2,10 +2,12 @@ import { useState } from 'react';
 import { format, parseISO } from 'date-fns';
 import type { IsoDate } from '@domain/common/types';
 import type { HarvestTimeEntry } from '@domain/harvest/harvest-types';
-import type { TimeInterval } from '@domain/time/time-interval';
-import { durationHours } from '@domain/time/time-interval';
+import type { TimeInterval, WorkItemLink } from '@domain/time/time-interval';
+import { durationHours, workItemLinksOf } from '@domain/time/time-interval';
+import { allocateHours, allocationWarning } from '@domain/services/work-item-allocation';
 import type { UpdateIntervalInput } from '@application/tracking-service';
 import { HarvestPicker, resolveNames } from '@presentation/components/harvest-picker';
+import { WorkItemPickerModal } from '@presentation/components/work-item-picker-modal';
 import { useHarvestEntries, useTrackingActions } from '@presentation/hooks/use-tracking';
 import { useHarvestOptions } from '@presentation/hooks/use-templates';
 import type { NewEntryPrefill } from '@presentation/state/entry-modal';
@@ -80,6 +82,11 @@ export function EntryModal({
   const [duration, setDuration] = useState(formatDuration(initialHours));
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [showLink, setShowLink] = useState(false);
+  // Every ADO ticket on this entry, primary first (ADR-029).
+  const [links, setLinks] = useState<readonly WorkItemLink[]>(() =>
+    interval ? workItemLinksOf(interval) : (prefill?.workItemLinks ?? []),
+  );
+  const [pickingTickets, setPickingTickets] = useState(false);
 
   const mappingMissing = projectId === undefined || taskId === undefined;
 
@@ -143,7 +150,7 @@ export function EntryModal({
     if (mode === 'new') {
       // Carry through the originating context (work item/template/meeting) so a
       // previously-unmapped Start/Log still lands as the right kind of entry.
-      const withContext = { ...base, source: prefill?.source, workItemRef: prefill?.workItemRef, templateId: prefill?.templateId };
+      const withContext = { ...base, source: prefill?.source, workItemLinks: links, templateId: prefill?.templateId };
       if (isLive) {
         actions.startManual.mutate(withContext, { onSuccess: onClose });
       } else {
@@ -160,7 +167,7 @@ export function EntryModal({
       const anchor = startIso ?? interval?.start ?? `${date}T00:00:00.000Z`;
       times = { start: anchor, end: new Date(new Date(anchor).getTime() + h * 3_600_000).toISOString() };
     }
-    const patch: UpdateIntervalInput = { ...base, ...times };
+    const patch: UpdateIntervalInput = { ...base, ...times, workItemLinks: links };
     if (external && harvestEntry) {
       actions.editExternal.mutate({ entry: harvestEntry, patch }, { onSuccess: onClose });
     } else if (interval) {
@@ -216,6 +223,8 @@ export function EntryModal({
             </p>
           )}
 
+          <WorkItemLinksField links={links} totalHours={hours} onChange={setLinks} onAdd={() => setPickingTickets(true)} />
+
           {mode === 'edit' && !external && interval && (
             <div>
               <button className="text-[11px] font-medium text-primary hover:underline" onClick={() => setShowLink((s) => !s)}>
@@ -246,6 +255,105 @@ export function EntryModal({
           )}
         </div>
       </div>
+      {pickingTickets && (
+        <WorkItemPickerModal
+          onClose={() => setPickingTickets(false)}
+          alreadyLinked={links.map((l) => l.workItemId)}
+          onAdd={(added) => setLinks((prev) => [...prev, ...added])}
+        />
+      )}
+    </div>
+  );
+}
+
+/**
+ * The entry's ADO tickets. Hours left blank share whatever the explicit ones
+ * don't claim; the first ticket is primary and owns Harvest's single external
+ * reference (ADR-029).
+ */
+function WorkItemLinksField({
+  links,
+  totalHours,
+  onChange,
+  onAdd,
+}: {
+  links: readonly WorkItemLink[];
+  totalHours: number;
+  onChange: (links: readonly WorkItemLink[]) => void;
+  onAdd: () => void;
+}) {
+  const allocations = allocateHours(totalHours, links);
+  const warning = allocationWarning(totalHours, links);
+
+  const setHours = (index: number, text: string) => {
+    const parsed = text.trim() === '' ? undefined : parseDuration(text);
+    onChange(links.map((l, i) => (i === index ? { ...l, hours: parsed && parsed > 0 ? parsed : undefined } : l)));
+  };
+  const removeAt = (index: number) => onChange(links.filter((_, i) => i !== index));
+  const makePrimary = (index: number) => {
+    const picked = links[index];
+    if (!picked) return;
+    onChange([picked, ...links.filter((_, i) => i !== index)]);
+  };
+
+  return (
+    <div>
+      <div className="mb-1 flex items-center gap-2">
+        <span className="text-xs font-medium text-muted">Azure tickets</span>
+        <span className="ml-auto" />
+        <button
+          type="button"
+          onClick={onAdd}
+          className="rounded-md border border-hairline px-2 py-1 text-[11px] font-medium text-muted hover:text-ink"
+        >
+          + Add Azure ticket
+        </button>
+      </div>
+      {links.length === 0 ? (
+        <p className="text-[11px] text-muted">No tickets linked.</p>
+      ) : (
+        <ul className="flex flex-col gap-1">
+          {links.map((link, i) => (
+            <li
+              key={`${link.connectionId}:${link.workItemId}`}
+              className="flex items-center gap-2 rounded-lg border border-hairline px-2 py-1.5"
+            >
+              <span className="tabular shrink-0 text-[11px] text-muted">#{link.workItemId}</span>
+              <span className="min-w-0 flex-1 truncate text-xs text-ink">{link.title ?? link.workItemType}</span>
+              {i === 0 ? (
+                <span className="shrink-0 rounded bg-primary-soft px-1.5 py-0.5 text-[10px] font-medium text-primary-soft-text">
+                  primary
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => makePrimary(i)}
+                  title="Make this the primary ticket (it owns the Harvest link)"
+                  className="shrink-0 text-[10px] text-muted hover:text-ink"
+                >
+                  make primary
+                </button>
+              )}
+              <input
+                value={link.hours === undefined ? '' : formatDuration(link.hours)}
+                onChange={(e) => setHours(i, e.target.value)}
+                placeholder={formatDuration(allocations[i]?.hours ?? 0)}
+                aria-label={`Hours for #${link.workItemId}`}
+                className="tabular w-14 shrink-0 rounded border border-hairline bg-canvas px-1.5 py-1 text-right text-[11px] text-ink outline-none placeholder:text-muted focus:border-primary"
+              />
+              <button
+                type="button"
+                onClick={() => removeAt(i)}
+                aria-label={`Remove #${link.workItemId}`}
+                className="shrink-0 rounded px-1 text-muted hover:text-danger"
+              >
+                ×
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {warning && <p className="mt-1 text-[11px] text-warning">{warning}</p>}
     </div>
   );
 }

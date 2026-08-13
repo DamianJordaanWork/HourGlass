@@ -8,13 +8,19 @@ import { SCHEMA_V1 } from '@infrastructure/persistence/sql/schema';
 const FIXED_NOW = '2026-08-11T00:00:00.000Z';
 const fixedNowIso = (): string => FIXED_NOW;
 
+/** The tip of the real migration set — assertions track it instead of a literal. */
+const TIP = MIGRATIONS[MIGRATIONS.length - 1]!.version;
+const ALL_VERSIONS = MIGRATIONS.map((m) => m.version);
+/** A synthetic migration one past the tip, for the ordering/idempotency cases. */
+const synthetic = { version: TIP + 1, name: 'add_widget', statements: [`CREATE TABLE IF NOT EXISTS widget (id TEXT PRIMARY KEY)`] };
+
 describe('runMigrations', () => {
-  it('applies v1, v2, v3 (append-only) against a fresh database', async () => {
+  it('applies every migration (append-only) against a fresh database', async () => {
     const db = new FakeSqlDatabase();
 
     const result = await runMigrations(db, MIGRATIONS, fixedNowIso);
 
-    expect(result).toEqual({ applied: [1, 2, 3], currentVersion: 3 });
+    expect(result).toEqual({ applied: ALL_VERSIONS, currentVersion: TIP });
 
     // schema_migrations bootstrap table created
     expect(db.log[0]!.sql).toContain('CREATE TABLE IF NOT EXISTS schema_migrations');
@@ -28,12 +34,9 @@ describe('runMigrations', () => {
     // the v3 append-only statement was executed
     expect(db.log.some((c) => c.sql === 'ALTER TABLE ado_connection ADD COLUMN harvest_guid TEXT')).toBe(true);
 
-    // exactly three INSERTs recording versions 1, 2, 3, in order
+    // one INSERT per migration, in ascending order
     const inserts = db.log.filter((c) => c.sql.startsWith('INSERT INTO schema_migrations'));
-    expect(inserts).toHaveLength(3);
-    expect(inserts[0]!.params).toEqual([1, 'schema_v1', FIXED_NOW]);
-    expect(inserts[1]!.params).toEqual([2, 'settings_google_client_id', FIXED_NOW]);
-    expect(inserts[2]!.params).toEqual([3, 'ado_connection_harvest_guid', FIXED_NOW]);
+    expect(inserts.map((i) => i.params)).toEqual(MIGRATIONS.map((m) => [m.version, m.name, FIXED_NOW]));
   });
 
   it('is idempotent — a second run applies nothing', async () => {
@@ -43,7 +46,7 @@ describe('runMigrations', () => {
     const before = db.log.length;
     const result = await runMigrations(db, MIGRATIONS, fixedNowIso);
 
-    expect(result).toEqual({ applied: [], currentVersion: 3 });
+    expect(result).toEqual({ applied: [], currentVersion: TIP });
     // only the bootstrap CREATE TABLE + SELECT ran again, no DDL/INSERT re-applied
     const callsSinceSecondRun = db.log.slice(before);
     expect(callsSinceSecondRun.length).toBeGreaterThan(0);
@@ -51,49 +54,46 @@ describe('runMigrations', () => {
     expect(insertsSinceSecondRun).toHaveLength(0);
   });
 
-  it('applies a synthetic v4 in order on a fresh database (v1, v2, v3, then v4)', async () => {
+  it('applies a synthetic migration past the tip, in order, on a fresh database', async () => {
     const db = new FakeSqlDatabase();
-    const v4 = { version: 4, name: 'add_widget', statements: [`CREATE TABLE IF NOT EXISTS widget (id TEXT PRIMARY KEY)`] };
 
-    const result = await runMigrations(db, [...MIGRATIONS, v4], fixedNowIso);
+    const result = await runMigrations(db, [...MIGRATIONS, synthetic], fixedNowIso);
 
-    expect(result).toEqual({ applied: [1, 2, 3, 4], currentVersion: 4 });
+    expect(result).toEqual({ applied: [...ALL_VERSIONS, synthetic.version], currentVersion: synthetic.version });
     const inserts = db.log.filter((c) => c.sql.startsWith('INSERT INTO schema_migrations'));
-    expect(inserts.map((i) => i.params[0])).toEqual([1, 2, 3, 4]);
+    expect(inserts.map((i) => i.params[0])).toEqual([...ALL_VERSIONS, synthetic.version]);
   });
 
-  it('applies only v2 and v3 on a database that already has v1', async () => {
+  it('applies only the outstanding migrations on a database that already has v1', async () => {
     const db = new FakeSqlDatabase();
     await runMigrations(db, [MIGRATIONS[0]!], fixedNowIso);
 
     const result = await runMigrations(db, MIGRATIONS, fixedNowIso);
 
-    expect(result).toEqual({ applied: [2, 3], currentVersion: 3 });
+    expect(result).toEqual({ applied: ALL_VERSIONS.slice(1), currentVersion: TIP });
     const alterCalls = db.log.filter((c) => c.sql === 'ALTER TABLE settings ADD COLUMN google_client_id TEXT');
     expect(alterCalls).toHaveLength(1);
     const guidAlterCalls = db.log.filter((c) => c.sql === 'ALTER TABLE ado_connection ADD COLUMN harvest_guid TEXT');
     expect(guidAlterCalls).toHaveLength(1);
   });
 
-  it('applies only v4 on a database that already has v1, v2, v3', async () => {
+  it('applies only the new migration on a database already at the tip', async () => {
     const db = new FakeSqlDatabase();
     await runMigrations(db, MIGRATIONS, fixedNowIso);
 
-    const v4 = { version: 4, name: 'add_widget', statements: [`CREATE TABLE IF NOT EXISTS widget (id TEXT PRIMARY KEY)`] };
-    const result = await runMigrations(db, [...MIGRATIONS, v4], fixedNowIso);
+    const result = await runMigrations(db, [...MIGRATIONS, synthetic], fixedNowIso);
 
-    expect(result).toEqual({ applied: [4], currentVersion: 4 });
+    expect(result).toEqual({ applied: [synthetic.version], currentVersion: synthetic.version });
   });
 
   it('applies migrations in ascending order regardless of input order', async () => {
     const db = new FakeSqlDatabase();
-    const v4 = { version: 4, name: 'add_widget', statements: [`CREATE TABLE IF NOT EXISTS widget (id TEXT PRIMARY KEY)`] };
 
-    const result = await runMigrations(db, [v4, ...MIGRATIONS], fixedNowIso);
+    const result = await runMigrations(db, [synthetic, ...MIGRATIONS], fixedNowIso);
 
-    expect(result).toEqual({ applied: [1, 2, 3, 4], currentVersion: 4 });
+    expect(result).toEqual({ applied: [...ALL_VERSIONS, synthetic.version], currentVersion: synthetic.version });
     const inserts = db.log.filter((c) => c.sql.startsWith('INSERT INTO schema_migrations'));
-    expect(inserts.map((i) => i.params[0])).toEqual([1, 2, 3, 4]);
+    expect(inserts.map((i) => i.params[0])).toEqual([...ALL_VERSIONS, synthetic.version]);
   });
 
   it('throws MigrationError on duplicate versions', async () => {
@@ -132,7 +132,7 @@ describe('runMigrations', () => {
   });
 
   describe('migration v2 (settings_google_client_id) against a real SQLite engine', () => {
-    it('a fresh database applies v1+v2+v3 and reaches currentVersion 3, with the column present', async () => {
+    it('a fresh database applies every migration and reaches the tip, with the column present', async () => {
       const db = createInMemoryWasmDatabase(MIGRATIONS);
 
       // WasmSqlDatabase runs migrations lazily on first use.
@@ -141,10 +141,10 @@ describe('runMigrations', () => {
       expect(names).toContain('google_client_id');
 
       const versions = await db.query<{ version: number }>('SELECT version FROM schema_migrations ORDER BY version');
-      expect(versions.map((v) => v.version)).toEqual([1, 2, 3]);
+      expect(versions.map((v) => v.version)).toEqual(ALL_VERSIONS);
     });
 
-    it('a database already at v1 applies only v2 and v3 and gains the columns', async () => {
+    it('a database already at v1 applies the rest and gains the columns', async () => {
       const v1Only = createInMemoryWasmDatabase([MIGRATIONS[0]!]);
       // Force v1-only initialization.
       await v1Only.query('SELECT 1');
@@ -153,11 +153,32 @@ describe('runMigrations', () => {
 
       const result = await runMigrations(v1Only, MIGRATIONS, fixedNowIso);
 
-      expect(result).toEqual({ applied: [2, 3], currentVersion: 3 });
+      expect(result).toEqual({ applied: ALL_VERSIONS.slice(1), currentVersion: TIP });
       const columnsAfter = await v1Only.query<{ name: string }>('PRAGMA table_info(settings)');
       expect(columnsAfter.map((c) => c.name)).toContain('google_client_id');
       const adoColumnsAfter = await v1Only.query<{ name: string }>('PRAGMA table_info(ado_connection)');
       expect(adoColumnsAfter.map((c) => c.name)).toContain('harvest_guid');
+    });
+  });
+
+  describe('migration v4 (work item sections + multi-ticket intervals)', () => {
+    it('a fresh database has work_item_refs, the sections tables, and the parent-fetch setting', async () => {
+      const db = createInMemoryWasmDatabase(MIGRATIONS);
+
+      const intervalCols = await db.query<{ name: string }>('PRAGMA table_info(time_interval)');
+      expect(intervalCols.map((c) => c.name)).toContain('work_item_refs');
+
+      const settingsCols = await db.query<{ name: string }>('PRAGMA table_info(settings)');
+      expect(settingsCols.map((c) => c.name)).toContain('fetch_parent_work_items');
+
+      const sectionCols = await db.query<{ name: string }>('PRAGMA table_info(work_item_section)');
+      expect(sectionCols.map((c) => c.name)).toEqual(
+        expect.arrayContaining(['id', 'label', 'sort_order', 'enabled', 'default_collapsed', 'nest_under_parent', 'group_by_parent', 'sort_by', 'sort_direction']),
+      );
+      const conditionCols = await db.query<{ name: string }>('PRAGMA table_info(work_item_section_condition)');
+      expect(conditionCols.map((c) => c.name)).toEqual(
+        expect.arrayContaining(['section_id', 'seq', 'field', 'operator', 'value', 'negate']),
+      );
     });
   });
 

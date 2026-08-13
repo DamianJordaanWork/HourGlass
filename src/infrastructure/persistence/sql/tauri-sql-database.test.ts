@@ -118,7 +118,13 @@ describe('TauriSqlDatabase', () => {
     expect(rows).toEqual([{ id: 'n1', is_wip: 1 }]);
   });
 
-  it('transaction commits: BEGIN ... COMMIT wraps the work', async () => {
+  // These two assertions are deliberately INVERTED from what you'd expect of a
+  // SQL database. `tauri-plugin-sql` serves each statement from an sqlx pool via
+  // a separate IPC call, so a BEGIN and its COMMIT land on different
+  // connections and SQLite rejects the commit with "cannot commit - no
+  // transaction is active" — which broke desktop startup outright. Emitting
+  // BEGIN/COMMIT here is worse than useless. See ADR-033 before "fixing" this.
+  it('transaction does NOT emit BEGIN/COMMIT — they would land on different pool connections', async () => {
     const { driver, calls } = createFakeDriver();
     const db = new TauriSqlDatabase({ loadDriver: async () => driver, migrations: NOOP_MIGRATIONS });
     await db.execute('SELECT 1');
@@ -129,11 +135,12 @@ describe('TauriSqlDatabase', () => {
     });
 
     const sqls = calls.filter((c) => c.kind === 'execute').map((c) => c.sql);
-    expect(sqls[0]).toBe('BEGIN');
-    expect(sqls[sqls.length - 1]).toBe('COMMIT');
+    expect(sqls).not.toContain('BEGIN');
+    expect(sqls).not.toContain('COMMIT');
+    expect(sqls).toHaveLength(1); // just the caller's own statement
   });
 
-  it('transaction rolls back on throw, wraps in SqlError, and rethrows', async () => {
+  it('transaction still surfaces a failure as SqlError (without a bogus ROLLBACK)', async () => {
     const { driver, calls } = createFakeDriver();
     const db = new TauriSqlDatabase({ loadDriver: async () => driver, migrations: NOOP_MIGRATIONS });
     await db.execute('SELECT 1');
@@ -147,8 +154,28 @@ describe('TauriSqlDatabase', () => {
     ).rejects.toThrow(SqlError);
 
     const sqls = calls.filter((c) => c.kind === 'execute').map((c) => c.sql);
-    expect(sqls[0]).toBe('BEGIN');
-    expect(sqls[sqls.length - 1]).toBe('ROLLBACK');
+    expect(sqls).not.toContain('ROLLBACK');
+  });
+
+  it('a multi-statement repo write reaches the driver in order', async () => {
+    const { driver, calls } = createFakeDriver();
+    const db = new TauriSqlDatabase({ loadDriver: async () => driver, migrations: NOOP_MIGRATIONS });
+    await db.execute('SELECT 1');
+    calls.length = 0;
+
+    // The shape every conditions-carrying repo uses (header, clear, re-insert).
+    await db.transaction(async (tx) => {
+      await tx.execute('INSERT OR REPLACE INTO work_item_section (id) VALUES (?)', ['s1']);
+      await tx.execute('DELETE FROM work_item_section_condition WHERE section_id = ?', ['s1']);
+      await tx.execute('INSERT INTO work_item_section_condition (section_id) VALUES (?)', ['s1']);
+    });
+
+    // `?` placeholders are rewritten to `$n` for the plugin's sqlite driver.
+    expect(calls.filter((c) => c.kind === 'execute').map((c) => c.sql)).toEqual([
+      'INSERT OR REPLACE INTO work_item_section (id) VALUES ($1)',
+      'DELETE FROM work_item_section_condition WHERE section_id = $1',
+      'INSERT INTO work_item_section_condition (section_id) VALUES ($1)',
+    ]);
   });
 
   it('wraps driver errors in SqlError', async () => {

@@ -8,7 +8,9 @@ import type {
   IQuickTemplateRepository,
   ISettingsRepository,
   ITimeIntervalRepository,
+  IWorkItemSectionRepository,
 } from '@domain/ports';
+import type { WorkItemSection } from '@domain/work-items/work-item-section';
 import type { Note } from '@domain/notes/note';
 import type { AdoConnection } from '@domain/connections/connection';
 import type { TimeInterval } from '@domain/time/time-interval';
@@ -22,6 +24,7 @@ import { LocalCollection, LocalValue, defaultStorage, type StorageLike } from '.
 export const KEY = {
   intervals: 'hourglass.intervals',
   mappingRules: 'hourglass.mappingRules',
+  workItemSections: 'hourglass.workItemSections',
   calendarAccounts: 'hourglass.calendarAccounts',
   meetings: 'hourglass.meetings',
   quickTemplates: 'hourglass.quickTemplates',
@@ -59,6 +62,19 @@ export class MappingRuleRepository implements IMappingRuleRepository {
   }
   async upsert(rule: MappingRule): Promise<void> {
     this.c.upsert(rule);
+  }
+  async delete(id: Id): Promise<void> {
+    this.c.delete(id);
+  }
+}
+
+export class WorkItemSectionRepository implements IWorkItemSectionRepository {
+  constructor(private readonly c: LocalCollection<WorkItemSection>) {}
+  async list(): Promise<WorkItemSection[]> {
+    return this.c.all().sort((a, b) => a.sortOrder - b.sortOrder);
+  }
+  async upsert(section: WorkItemSection): Promise<void> {
+    this.c.upsert(section);
   }
   async delete(id: Id): Promise<void> {
     this.c.delete(id);
@@ -143,6 +159,7 @@ export class SettingsRepository implements ISettingsRepository {
 export interface LocalRepositories extends AppRepositories {
   readonly intervals: TimeIntervalRepository;
   readonly mappingRules: MappingRuleRepository;
+  readonly workItemSections: WorkItemSectionRepository;
   readonly calendarAccounts: CalendarAccountRepository;
   readonly meetings: MeetingRepository;
   readonly quickTemplates: QuickTemplateRepository;
@@ -155,6 +172,7 @@ export function createLocalRepositories(storage: StorageLike = defaultStorage())
   return {
     intervals: new TimeIntervalRepository(new LocalCollection(KEY.intervals, storage)),
     mappingRules: new MappingRuleRepository(new LocalCollection(KEY.mappingRules, storage)),
+    workItemSections: new WorkItemSectionRepository(new LocalCollection(KEY.workItemSections, storage)),
     calendarAccounts: new CalendarAccountRepository(new LocalCollection(KEY.calendarAccounts, storage)),
     meetings: new MeetingRepository(new LocalCollection(KEY.meetings, storage)),
     quickTemplates: new QuickTemplateRepository(new LocalCollection(KEY.quickTemplates, storage)),

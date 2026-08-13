@@ -5,9 +5,10 @@ import type { WorkItem } from '@domain/work-items/work-item';
 import { meetingDurationHours, type Meeting } from '@domain/calendar/meeting';
 import type { QuickTemplate } from '@domain/templates/quick-template';
 import type { HarvestTimeEntry } from '@domain/harvest/harvest-types';
-import type { WorkItemRef } from '@domain/time/time-interval';
+import type { WorkItemLink, WorkItemRef } from '@domain/time/time-interval';
 import type { UpdateIntervalInput } from '@application/tracking-service';
 import { useContainer } from '@presentation/container-context';
+import { toWorkItemLink } from '@presentation/lib/work-item-ref';
 import { pollingIntervalMs } from '@presentation/lib/polling';
 import { useSettings } from '@presentation/hooks/use-settings';
 import { useWorkItemFilter } from '@presentation/state/work-item-filter';
@@ -22,6 +23,8 @@ export interface ManualEntryInput {
   /** Preserves the originating context when a prefilled unmapped start is completed. */
   readonly source?: TrackingSource;
   readonly workItemRef?: WorkItemRef;
+  /** Every ADO ticket linked to this entry, primary first. */
+  readonly workItemLinks?: readonly WorkItemLink[];
   readonly templateId?: Id;
 }
 
@@ -128,7 +131,7 @@ export function useTrackingActions(date: IsoDate) {
         projectName: names.projectName,
         taskName: names.taskName,
         notes: t?.noteTemplate ?? item.title,
-        workItemRef: { connectionId: item.connectionId, workItemId: item.id, workItemType: item.workItemType, url: item.url },
+        workItemLinks: [toWorkItemLink(item)],
       });
     },
     onSuccess: invalidate,

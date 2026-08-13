@@ -28,3 +28,16 @@ tauri-plugin-http = "2"
 tauri-plugin-stronghold = "2"
 argon2 = { package = "rust-argon2", version = "2" }
 # TODO(F17): tauri-plugin-oauth once the loopback plugin package is confirmed
+
+# Optimize ALL dependencies in dev builds; our own crate stays unoptimized and
+# fully debuggable. This is not a nicety — it is load-bearing (ADR-034).
+#
+# Stronghold's snapshot write (compress + age/ChaCha20-Poly1305 encrypt) is
+# pathologically slow unoptimized: measured at **93.7s** per save, versus
+# **1.4s** with this profile — a 66x difference. Every "Save" in Settings
+# writes the vault snapshot, so without this, saving a PAT blows past any
+# sane timeout and looks like a hang. Argon2 key derivation benefits too
+# (~870ms -> ~50ms). Crypto correctness is unaffected: same algorithms, same
+# bytes, so existing vaults still open.
+[profile.dev.package."*"]
+opt-level = 3

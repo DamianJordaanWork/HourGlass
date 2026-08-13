@@ -7,6 +7,7 @@ import type {
   IQuickTemplateRepository,
   ISettingsRepository,
   ITimeIntervalRepository,
+  IWorkItemSectionRepository,
 } from '@domain/ports';
 
 /**
@@ -16,6 +17,7 @@ import type {
 export interface AppRepositories {
   readonly intervals: ITimeIntervalRepository;
   readonly mappingRules: IMappingRuleRepository;
+  readonly workItemSections: IWorkItemSectionRepository;
   readonly calendarAccounts: ICalendarAccountRepository;
   readonly meetings: IMeetingRepository;
   readonly quickTemplates: IQuickTemplateRepository;
@@ -47,6 +49,12 @@ export class RepositoriesFacade implements AppRepositories {
     list: async (...a) => (await this.backend).mappingRules.list(...a),
     upsert: async (...a) => (await this.backend).mappingRules.upsert(...a),
     delete: async (...a) => (await this.backend).mappingRules.delete(...a),
+  };
+
+  readonly workItemSections: IWorkItemSectionRepository = {
+    list: async (...a) => (await this.backend).workItemSections.list(...a),
+    upsert: async (...a) => (await this.backend).workItemSections.upsert(...a),
+    delete: async (...a) => (await this.backend).workItemSections.delete(...a),
   };
 
   readonly calendarAccounts: ICalendarAccountRepository = {

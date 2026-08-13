@@ -12,8 +12,8 @@ function connection(id: string, iterationPath?: string): AdoConnection {
   return { id, label: id, orgUrl: 'https://dev.azure.com/x', iterationPath, enabled: true };
 }
 
-function workItem(id: number, connectionId: string): WorkItem {
-  return { id, title: `WI ${id}`, workItemType: 'Task', state: 'Active', project: 'P', iterationPath: '', areaPath: '', tags: [], connectionId, url: '' };
+function workItem(id: number, connectionId: string, over: Partial<WorkItem> = {}): WorkItem {
+  return { id, title: `WI ${id}`, workItemType: 'Task', state: 'Active', project: 'P', iterationPath: '', areaPath: '', tags: [], connectionId, url: '', ...over };
 }
 
 describe('fanOutWorkItems', () => {
@@ -35,6 +35,7 @@ describe('fanOutWorkItems', () => {
       listAssignedWorkItems,
       queryWorkItems: vi.fn(),
       getWorkItem: vi.fn(),
+      getWorkItems: vi.fn(async () => []),
       syncCompletedWork: vi.fn(),
     };
     const conns = [connection('c1', 'Proj\\Sprint 1')];
@@ -53,6 +54,7 @@ describe('fanOutWorkItems', () => {
       listAssignedWorkItems: vi.fn(),
       queryWorkItems,
       getWorkItem: vi.fn(),
+      getWorkItems: vi.fn(async () => []),
       syncCompletedWork: vi.fn(),
     };
     const conns = [connection('c1'), connection('c2')];
@@ -77,6 +79,7 @@ describe('fanOutWorkItems', () => {
       listAssignedWorkItems: vi.fn(),
       queryWorkItems,
       getWorkItem: vi.fn(),
+      getWorkItems: vi.fn(async () => []),
       syncCompletedWork: vi.fn(),
     };
     const conns = [connection('bad'), connection('good')];
@@ -90,5 +93,72 @@ describe('fanOutWorkItems', () => {
     });
     expect(items).toEqual([workItem(9, 'good')]);
     expect(warn).toHaveBeenCalledWith('[ado] listWorkItems failed', 'bad', expect.any(Error));
+  });
+
+  describe('parent fetching', () => {
+    const adoWith = (items: WorkItem[], getWorkItems = vi.fn(async () => [] as WorkItem[])): IAzureDevOpsClient => ({
+      listAssignedWorkItems: vi.fn(async () => items),
+      queryWorkItems: vi.fn(),
+      getWorkItem: vi.fn(),
+      getWorkItems,
+      syncCompletedWork: vi.fn(),
+    });
+    const run = (ado: IAzureDevOpsClient, fetchParents?: boolean) =>
+      fanOutWorkItems({
+        ado,
+        listEnabledAdoConnections: async () => [connection('c1')],
+        demoWorkItems,
+        fetchParents,
+        warn: vi.fn(),
+      });
+
+    it('fetches the missing parent of an orphaned task', async () => {
+      const getWorkItems = vi.fn(async () => [workItem(50, 'c1', { workItemType: 'User Story' })]);
+      const items = await run(adoWith([workItem(1, 'c1', { parentId: 50 })], getWorkItems));
+      expect(getWorkItems).toHaveBeenCalledWith('c1', [50]);
+      expect(items.map((i) => i.id)).toEqual([1, 50]);
+    });
+
+    it('does not fetch a parent that is already present', async () => {
+      const getWorkItems = vi.fn(async () => [] as WorkItem[]);
+      await run(adoWith([workItem(50, 'c1', { workItemType: 'User Story' }), workItem(1, 'c1', { parentId: 50 })], getWorkItems));
+      expect(getWorkItems).not.toHaveBeenCalled();
+    });
+
+    it('only chases parents of Tasks — a Story never pulls its Feature', async () => {
+      const getWorkItems = vi.fn(async () => [] as WorkItem[]);
+      await run(adoWith([workItem(1, 'c1', { workItemType: 'User Story', parentId: 900 })], getWorkItems));
+      expect(getWorkItems).not.toHaveBeenCalled();
+    });
+
+    it('does not recurse — a fetched story does not trigger a second lookup', async () => {
+      const getWorkItems = vi.fn(async () => [workItem(50, 'c1', { workItemType: 'User Story', parentId: 900 })]);
+      const items = await run(adoWith([workItem(1, 'c1', { parentId: 50 })], getWorkItems));
+      expect(getWorkItems).toHaveBeenCalledTimes(1);
+      expect(items.map((i) => i.id)).toEqual([1, 50]);
+    });
+
+    it('honours fetchParents: false', async () => {
+      const getWorkItems = vi.fn(async () => [] as WorkItem[]);
+      await run(adoWith([workItem(1, 'c1', { parentId: 50 })], getWorkItems), false);
+      expect(getWorkItems).not.toHaveBeenCalled();
+    });
+
+    it('keeps the items when the parent lookup fails', async () => {
+      const getWorkItems = vi.fn(async () => {
+        throw new Error('boom');
+      });
+      const items = await run(adoWith([workItem(1, 'c1', { parentId: 50 })], getWorkItems));
+      expect(items.map((i) => i.id)).toEqual([1]);
+    });
+
+    it('dedupes a parent that two tasks share', async () => {
+      const getWorkItems = vi.fn(async () => [workItem(50, 'c1', { workItemType: 'User Story' })]);
+      const items = await run(
+        adoWith([workItem(1, 'c1', { parentId: 50 }), workItem(2, 'c1', { parentId: 50 })], getWorkItems),
+      );
+      expect(getWorkItems).toHaveBeenCalledWith('c1', [50]);
+      expect(items.map((i) => i.id)).toEqual([1, 2, 50]);
+    });
   });
 });

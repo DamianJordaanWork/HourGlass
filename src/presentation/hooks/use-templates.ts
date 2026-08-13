@@ -1,11 +1,32 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { MappingRule } from '@domain/templates/mapping';
 import type { QuickTemplate } from '@domain/templates/quick-template';
+import type { WorkItemSection } from '@domain/work-items/work-item-section';
 import { useContainer } from '@presentation/container-context';
 
 export function useMappingRules() {
   const c = useContainer();
   return useQuery({ queryKey: ['mappingRules'], queryFn: () => c.repos.mappingRules.list() });
+}
+
+export function useWorkItemSections() {
+  const c = useContainer();
+  return useQuery({ queryKey: ['workItemSections'], queryFn: () => c.repos.workItemSections.list() });
+}
+
+export function useWorkItemSectionActions() {
+  const c = useContainer();
+  const qc = useQueryClient();
+  const invalidate = () => qc.invalidateQueries({ queryKey: ['workItemSections'] });
+  const save = useMutation({
+    mutationFn: (section: WorkItemSection) => c.repos.workItemSections.upsert(section),
+    onSuccess: invalidate,
+  });
+  const remove = useMutation({
+    mutationFn: (id: string) => c.repos.workItemSections.delete(id),
+    onSuccess: invalidate,
+  });
+  return { save, remove, newId: () => c.newId() };
 }
 
 export function useTemplatesData() {

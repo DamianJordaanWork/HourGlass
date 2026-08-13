@@ -1,10 +1,13 @@
-import { useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import type { WorkItem } from '@domain/work-items/work-item';
 import type { Meeting } from '@domain/calendar/meeting';
 import { meetingDurationHours } from '@domain/calendar/meeting';
+import { partitionIntoSections, type SectionBucket } from '@domain/work-items/work-item-section';
+import { countNodes, type WorkItemNode } from '@domain/work-items/work-item-tree';
 import { useSelectedDay } from '@presentation/state/selected-day';
 import { useEntryModalStore } from '@presentation/state/entry-modal';
 import { useWorkItemFilter } from '@presentation/state/work-item-filter';
+import { collapseKeys, useWorkItemCollapse } from '@presentation/state/work-item-collapse';
 import { useContainer } from '@presentation/container-context';
 import {
   useMeetingMapping,
@@ -14,6 +17,9 @@ import {
   useWorkItemMapping,
   useWorkItems,
 } from '@presentation/hooks/use-tracking';
+import { useWorkItemSections } from '@presentation/hooks/use-templates';
+import { filterWorkItemTree } from '@presentation/lib/work-item-search';
+import { toWorkItemLink } from '@presentation/lib/work-item-ref';
 import { formatHours, formatTimeRange } from '@presentation/lib/format';
 
 type Tab = 'work' | 'meetings' | 'templates';
@@ -62,7 +68,9 @@ function WorkItemsTab() {
   const c = useContainer();
   const { data: items, isLoading } = useWorkItems();
   const { data: templates } = useQuickTemplates();
+  const { data: sections } = useWorkItemSections();
   const { filterId, setFilter } = useWorkItemFilter();
+  const [query, setQuery] = useState('');
   const queryTemplates = (templates ?? []).filter((t) => t.enabled && t.adoQuery?.trim());
   const showFilter = c.isConfigured() && queryTemplates.length > 0;
 
@@ -75,8 +83,28 @@ function WorkItemsTab() {
     if (tpl?.adoQuery) setFilter({ id: tpl.id, wiql: tpl.adoQuery });
   };
 
+  // Group into sections, then narrow by the search box — searching keeps the
+  // ancestors of a match so a hit still reads under its story.
+  const buckets = useMemo(() => {
+    const grouped = partitionIntoSections(items ?? [], sections ?? []);
+    return grouped
+      .map((b) => ({ ...b, nodes: filterWorkItemTree(b.nodes, query) }))
+      .filter((b) => b.nodes.length > 0);
+  }, [items, sections, query]);
+
+  const searching = query.trim() !== '';
+  const empty = buckets.length === 0;
+
   return (
     <div className="flex flex-col gap-2">
+      <input
+        type="search"
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        placeholder="Search tickets…"
+        aria-label="Search work items"
+        className="rounded-lg border border-hairline bg-canvas px-2 py-1.5 text-xs text-ink outline-none placeholder:text-muted focus:border-primary"
+      />
       {showFilter && (
         <select
           className="rounded-lg border border-hairline bg-canvas px-2 py-1.5 text-xs text-ink outline-none focus:border-primary"
@@ -91,16 +119,97 @@ function WorkItemsTab() {
       )}
       {isLoading ? (
         <Hint>Loading work items…</Hint>
-      ) : !items?.length ? (
-        <Hint>{filterId ? 'No work items match this filter.' : 'No assigned work items.'}</Hint>
+      ) : empty ? (
+        <Hint>
+          {searching
+            ? 'No work items match this search.'
+            : filterId
+              ? 'No work items match this filter.'
+              : 'No assigned work items.'}
+        </Hint>
       ) : (
-        items.map((item) => <WorkItemCard key={item.id} item={item} />)
+        buckets.map((bucket) => <WorkItemSectionGroup key={bucket.section?.id ?? '__other'} bucket={bucket} forceOpen={searching} />)
       )}
     </div>
   );
 }
 
-function WorkItemCard({ item }: { item: WorkItem }) {
+/** One collapsible section: its own header plus the tree that landed in it. */
+function WorkItemSectionGroup({ bucket, forceOpen }: { bucket: SectionBucket; forceOpen: boolean }) {
+  const key = collapseKeys.section(bucket.section?.id ?? '__other');
+  const collapsed = useWorkItemCollapse((s) => s.collapsed.has(key));
+  const toggle = useWorkItemCollapse((s) => s.toggle);
+  const seed = useWorkItemCollapse((s) => s.seed);
+  const open = forceOpen || !collapsed;
+
+  // Apply "collapsed by default" once — after that the user's own toggling wins.
+  const defaultCollapsed = bucket.section?.defaultCollapsed ?? false;
+  useEffect(() => {
+    if (defaultCollapsed) seed(key);
+  }, [defaultCollapsed, key, seed]);
+
+  return (
+    <section className="flex flex-col gap-2">
+      <button
+        onClick={() => toggle(key)}
+        aria-expanded={open}
+        className="flex items-center gap-1.5 rounded-md px-1 py-1 text-left text-[11px] font-semibold uppercase tracking-wide text-muted hover:text-ink"
+      >
+        <Chevron open={open} />
+        <span className="truncate">{bucket.section?.label ?? 'Other'}</span>
+        <span className="tabular ml-auto rounded bg-elevated px-1.5 py-0.5 text-[10px] font-medium normal-case tracking-normal">
+          {countNodes(bucket.nodes)}
+        </span>
+      </button>
+      {open && (
+        <div className="flex flex-col gap-2">
+          {bucket.nodes.map((node) => (
+            <WorkItemTreeRow key={node.item.id} node={node} depth={0} forceOpen={forceOpen} />
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+/** A work item plus, when it has children, its own collapsible subtree. */
+function WorkItemTreeRow({ node, depth, forceOpen }: { node: WorkItemNode; depth: number; forceOpen: boolean }) {
+  const key = collapseKeys.item(node.item.id);
+  const collapsed = useWorkItemCollapse((s) => s.collapsed.has(key));
+  const toggle = useWorkItemCollapse((s) => s.toggle);
+  const hasChildren = node.children.length > 0;
+  const open = forceOpen || !collapsed;
+
+  return (
+    <div className="flex flex-col gap-2" style={depth > 0 ? { marginLeft: 12 } : undefined}>
+      <WorkItemCard
+        item={node.item}
+        childCount={hasChildren ? countNodes(node.children) : 0}
+        expanded={open}
+        onToggle={hasChildren ? () => toggle(key) : undefined}
+      />
+      {hasChildren && open && (
+        <div className="flex flex-col gap-2 border-l border-hairline pl-2">
+          {node.children.map((child) => (
+            <WorkItemTreeRow key={child.item.id} node={child} depth={depth + 1} forceOpen={forceOpen} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function WorkItemCard({
+  item,
+  childCount = 0,
+  expanded,
+  onToggle,
+}: {
+  item: WorkItem;
+  childCount?: number;
+  expanded?: boolean;
+  onToggle?: () => void;
+}) {
   const { date } = useSelectedDay();
   const actions = useTrackingActions(date);
   const openEntryModal = useEntryModalStore((s) => s.open);
@@ -115,7 +224,7 @@ function WorkItemCard({ item }: { item: WorkItem }) {
       openEntryModal({
         source: 'WorkItem',
         notes: item.title,
-        workItemRef: { connectionId: item.connectionId, workItemId: item.id, workItemType: item.workItemType, url: item.url },
+        workItemLinks: [toWorkItemLink(item)],
       });
     }
   };
@@ -123,8 +232,21 @@ function WorkItemCard({ item }: { item: WorkItem }) {
   return (
     <div className="rounded-lg border border-hairline bg-canvas p-3">
       <div className="mb-1 flex items-center gap-1.5">
+        {onToggle && (
+          <button
+            onClick={onToggle}
+            aria-expanded={expanded}
+            aria-label={expanded ? `Collapse children of #${item.id}` : `Expand children of #${item.id}`}
+            className="-ml-1 rounded p-0.5 text-muted hover:text-ink"
+          >
+            <Chevron open={expanded ?? true} />
+          </button>
+        )}
         <span className="tabular rounded bg-elevated px-1.5 py-0.5 text-[10px] font-medium text-muted">#{item.id}</span>
         <span className="text-[10px] text-muted">{item.workItemType} · {item.state}</span>
+        {childCount > 0 && (
+          <span className="tabular ml-auto rounded bg-elevated px-1.5 py-0.5 text-[10px] text-muted">{childCount}</span>
+        )}
       </div>
       <div className="mb-2 text-sm font-medium leading-snug text-ink">{item.title}</div>
       <div className="flex items-center gap-2">
@@ -139,6 +261,18 @@ function WorkItemCard({ item }: { item: WorkItem }) {
         <StartButton onClick={start} />
       </div>
     </div>
+  );
+}
+
+function Chevron({ open }: { open: boolean }) {
+  return (
+    <svg
+      viewBox="0 0 12 12"
+      aria-hidden
+      className={'h-3 w-3 shrink-0 transition-transform ' + (open ? 'rotate-90' : '')}
+    >
+      <path d="M4 2.5 8 6l-4 3.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
   );
 }
 

@@ -13,6 +13,7 @@ import type { WorkItem } from '@domain/work-items/work-item';
 import type { CalendarAccount, Meeting } from '@domain/calendar/meeting';
 import type { TimeInterval } from '@domain/time/time-interval';
 import type { MappingRule } from '@domain/templates/mapping';
+import type { WorkItemSection } from '@domain/work-items/work-item-section';
 import type { QuickTemplate } from '@domain/templates/quick-template';
 import type { Settings } from '@domain/settings/settings';
 import type { Note } from '@domain/notes/note';
@@ -41,6 +42,8 @@ export interface IAzureDevOpsClient {
   /** Run a caller-supplied WIQL query verbatim (e.g. a saved template query). */
   queryWorkItems(connectionId: Id, wiql: string): Promise<WorkItem[]>;
   getWorkItem(connectionId: Id, workItemId: number): Promise<WorkItem>;
+  /** Batch fetch by id (chunked internally) — used to pull in missing parents. */
+  getWorkItems(connectionId: Id, ids: readonly number[]): Promise<WorkItem[]>;
   /** Increment `Microsoft.VSTS.Scheduling.CompletedWork` by `deltaHours` (best-effort). */
   syncCompletedWork(connectionId: Id, workItemId: number, deltaHours: number): Promise<void>;
 }
@@ -114,6 +117,12 @@ export interface ITimeIntervalRepository {
 export interface IMappingRuleRepository {
   list(): Promise<MappingRule[]>;
   upsert(rule: MappingRule): Promise<void>;
+  delete(id: Id): Promise<void>;
+}
+
+export interface IWorkItemSectionRepository {
+  list(): Promise<WorkItemSection[]>;
+  upsert(section: WorkItemSection): Promise<void>;
   delete(id: Id): Promise<void>;
 }
 

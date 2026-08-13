@@ -1,5 +1,6 @@
 import type { HttpRequest, HttpResponse, IHttpTransport } from '@domain/ports';
 import type { TauriFetch } from '@infrastructure/http/tauri-http-driver';
+import { HTTP_TIMEOUT_MS, withTimeout } from '@infrastructure/async/with-timeout';
 
 /** Thrown when the injected `TauriFetch` binding itself fails (network/plugin error). */
 export class HttpTransportError extends Error {
@@ -11,6 +12,8 @@ export class HttpTransportError extends Error {
 
 export interface TauriHttpTransportConfig {
   readonly fetchImpl: TauriFetch;
+  /** Ceiling on a whole request→body round trip. Defaults to {@link HTTP_TIMEOUT_MS}. */
+  readonly timeoutMs?: number;
 }
 
 /**
@@ -28,23 +31,32 @@ export class TauriHttpTransport implements IHttpTransport {
   constructor(private readonly config: TauriHttpTransportConfig) {}
 
   async send(request: HttpRequest): Promise<HttpResponse> {
-    let res: Awaited<ReturnType<TauriFetch>>;
+    const timeoutMs = this.config.timeoutMs ?? HTTP_TIMEOUT_MS;
     try {
-      res = await this.config.fetchImpl(request.url, {
-        method: request.method,
-        headers: request.headers as Record<string, string> | undefined,
-        body: request.body,
+      const res = await withTimeout(
+        this.config.fetchImpl(request.url, {
+          method: request.method,
+          headers: request.headers as Record<string, string> | undefined,
+          body: request.body,
+          // Belt and braces: ask the plugin to bound the connect phase too, so
+          // the Rust side gives up rather than leaving an IPC call outstanding.
+          connectTimeout: timeoutMs,
+        }),
+        `HTTP ${request.method} ${request.url}`,
+        timeoutMs,
+      );
+
+      // `text()` streams the body over repeated IPC reads, so it can stall just
+      // like the request itself — it must be bounded and caught, not left bare.
+      const body = await withTimeout(res.text(), `HTTP body ${request.url}`, timeoutMs);
+      const headers: Record<string, string> = {};
+      res.headers.forEach((value, key) => {
+        headers[key] = value;
       });
+      // Match FetchHttpTransport: non-2xx is returned as a normal response, not thrown.
+      return { status: res.status, headers, body };
     } catch (e) {
       throw new HttpTransportError(e instanceof Error ? e.message : 'Tauri HTTP request failed', e);
     }
-
-    const body = await res.text();
-    const headers: Record<string, string> = {};
-    res.headers.forEach((value, key) => {
-      headers[key] = value;
-    });
-    // Match FetchHttpTransport: non-2xx is returned as a normal response, not thrown.
-    return { status: res.status, headers, body };
   }
 }

@@ -26,7 +26,10 @@ const FIELDS = [
   'System.AreaPath',
   'System.AssignedTo',
   'System.Tags',
+  'System.Parent',
 ];
+/** ADO caps a work-item batch fetch at 200 ids. */
+const BATCH_SIZE = 200;
 const COMPLETED_WORK = 'Microsoft.VSTS.Scheduling.CompletedWork';
 
 interface WiqlResult {
@@ -81,6 +84,13 @@ export class AzureDevOpsClient implements IAzureDevOpsClient {
     return this.runWiql(conn, connectionId, wiql);
   }
 
+  /** Batch fetch by id — used to pull in parent stories for orphaned tasks. */
+  async getWorkItems(connectionId: Id, ids: readonly number[]): Promise<WorkItem[]> {
+    if (ids.length === 0) return [];
+    const conn = await this.connection(connectionId);
+    return this.fetchByIds(conn, connectionId, ids);
+  }
+
   async getWorkItem(connectionId: Id, workItemId: number): Promise<WorkItem> {
     const conn = await this.connection(connectionId);
     const dto = JSON.parse(
@@ -112,13 +122,28 @@ export class AzureDevOpsClient implements IAzureDevOpsClient {
     const wiqlRes = JSON.parse(
       await this.send(conn, 'POST', `/_apis/wit/wiql?${API}`, { query: wiql }),
     ) as WiqlResult;
-    const ids = wiqlRes.workItems.map((w) => w.id).slice(0, 200);
-    if (ids.length === 0) return [];
+    const ids = wiqlRes.workItems.map((w) => w.id).slice(0, BATCH_SIZE);
+    return this.fetchByIds(conn, connectionId, ids);
+  }
 
-    const batch = JSON.parse(
-      await this.send(conn, 'GET', `/_apis/wit/workitems?ids=${ids.join(',')}&fields=${FIELDS.join(',')}&${API}`),
-    ) as BatchResult;
-    return batch.value.map((dto) => this.mapWorkItem(conn, connectionId, dto));
+  /** Field-limited batch fetch, chunked to ADO's 200-ids-per-request ceiling. */
+  private async fetchByIds(
+    conn: AdoConnectionConfig,
+    connectionId: Id,
+    ids: readonly number[],
+  ): Promise<WorkItem[]> {
+    if (ids.length === 0) return [];
+    const chunks: number[][] = [];
+    for (let i = 0; i < ids.length; i += BATCH_SIZE) chunks.push(ids.slice(i, i + BATCH_SIZE));
+    const batches = await Promise.all(
+      chunks.map(async (chunk) => {
+        const batch = JSON.parse(
+          await this.send(conn, 'GET', `/_apis/wit/workitems?ids=${chunk.join(',')}&fields=${FIELDS.join(',')}&${API}`),
+        ) as BatchResult;
+        return batch.value.map((dto) => this.mapWorkItem(conn, connectionId, dto));
+      }),
+    );
+    return batches.flat();
   }
 
   private async connection(connectionId: Id): Promise<AdoConnectionConfig> {
@@ -140,6 +165,7 @@ export class AzureDevOpsClient implements IAzureDevOpsClient {
       areaPath: String(f['System.AreaPath'] ?? ''),
       assignedTo: identityName(f['System.AssignedTo']),
       tags: parseTags(f['System.Tags']),
+      parentId: Number(f['System.Parent']) || undefined,
       connectionId,
       url: `${conn.orgUrl}/${encodeURIComponent(project)}/_workitems/edit/${dto.id}`,
     };

@@ -4,8 +4,10 @@
  * nested objects <-> JSON TEXT. Kept isolated from the repos so the SQL/domain
  * boundary has one obvious place to look (resolves F2 open q#5).
  */
-import type { TimeInterval, WorkItemRef } from '@domain/time/time-interval';
+import type { TimeInterval, WorkItemLink, WorkItemRef } from '@domain/time/time-interval';
+import { normalizeWorkItemLinks } from '@domain/time/time-interval';
 import type { MappingCondition, MappingRule } from '@domain/templates/mapping';
+import type { WorkItemSection } from '@domain/work-items/work-item-section';
 import type { CalendarAccount, Meeting } from '@domain/calendar/meeting';
 import type { QuickTemplate } from '@domain/templates/quick-template';
 import type { Note } from '@domain/notes/note';
@@ -54,13 +56,17 @@ export interface TimeIntervalRow {
   readonly synced_hours: number | null;
   readonly source: string;
   readonly work_item_ref: string | null;
+  /** Added in migration v4; NULL on rows written before multi-ticket support. */
+  readonly work_item_refs?: string | null;
   readonly template_id: string | null;
   readonly created_at: string;
   readonly updated_at: string;
 }
 
 export function rowToTimeInterval(row: TimeIntervalRow): TimeInterval {
-  return {
+  // Pre-v4 rows only have the singular ref; normalize keeps primary + list in sync.
+  const links = parseJson<WorkItemLink[]>(row.work_item_refs ?? null);
+  return normalizeWorkItemLinks({
     id: row.id,
     date: row.date,
     harvestProjectId: nullToUndef(row.harvest_project_id),
@@ -75,10 +81,11 @@ export function rowToTimeInterval(row: TimeIntervalRow): TimeInterval {
     syncedHours: nullToUndef(row.synced_hours),
     source: row.source as TimeInterval['source'],
     workItemRef: parseJson<WorkItemRef>(row.work_item_ref),
+    workItemLinks: links?.length ? links : undefined,
     templateId: nullToUndef(row.template_id),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
-  };
+  });
 }
 
 export function timeIntervalParams(i: TimeInterval): readonly SqlParam[] {
@@ -97,6 +104,7 @@ export function timeIntervalParams(i: TimeInterval): readonly SqlParam[] {
     undefToNull(i.syncedHours),
     i.source,
     stringifyJson(i.workItemRef),
+    stringifyJson(i.workItemLinks?.length ? i.workItemLinks : undefined),
     undefToNull(i.templateId),
     i.createdAt,
     i.updatedAt,
@@ -168,6 +176,64 @@ export function rowToMappingCondition(row: MappingConditionRow): MappingConditio
 
 export function mappingConditionParams(ruleId: string, seq: number, c: MappingCondition): readonly SqlParam[] {
   return [ruleId, seq, c.field, c.operator, c.value, boolToInt(c.negate ?? false)];
+}
+
+// ── WorkItemSection ──────────────────────────────────────────────────────
+
+export interface WorkItemSectionRow {
+  readonly id: string;
+  readonly label: string;
+  readonly sort_order: number;
+  readonly enabled: number;
+  readonly default_collapsed: number;
+  readonly nest_under_parent: number;
+  readonly group_by_parent: number;
+  readonly sort_by: string;
+  readonly sort_direction: string;
+}
+
+export interface WorkItemSectionConditionRow {
+  readonly section_id: string;
+  readonly seq: number;
+  readonly field: string;
+  readonly operator: string;
+  readonly value: string;
+  readonly negate: number;
+}
+
+export function rowToWorkItemSection(
+  row: WorkItemSectionRow,
+  conditionRows: readonly WorkItemSectionConditionRow[],
+): WorkItemSection {
+  return {
+    id: row.id,
+    label: row.label,
+    conditions: conditionRows
+      .slice()
+      .sort((a, b) => a.seq - b.seq)
+      .map((c) => rowToMappingCondition({ ...c, rule_id: c.section_id })),
+    sortOrder: row.sort_order,
+    enabled: intToBool(row.enabled),
+    defaultCollapsed: intToBool(row.default_collapsed),
+    nestUnderParent: intToBool(row.nest_under_parent),
+    groupByParent: intToBool(row.group_by_parent),
+    sortBy: row.sort_by as WorkItemSection['sortBy'],
+    sortDirection: row.sort_direction as WorkItemSection['sortDirection'],
+  };
+}
+
+export function workItemSectionParams(s: WorkItemSection): readonly SqlParam[] {
+  return [
+    s.id,
+    s.label,
+    s.sortOrder,
+    boolToInt(s.enabled),
+    boolToInt(s.defaultCollapsed),
+    boolToInt(s.nestUnderParent),
+    boolToInt(s.groupByParent),
+    s.sortBy,
+    s.sortDirection,
+  ];
 }
 
 // ── CalendarAccount ──────────────────────────────────────────────────────
@@ -376,6 +442,8 @@ export interface SettingsRow {
   readonly aggregate_same_task_per_day: number;
   readonly embed_metadata: number;
   readonly hg1_scheme: string;
+  /** Added in migration v4; NULL ⇒ the default (on). */
+  readonly fetch_parent_work_items?: number | null;
 }
 
 export function rowToSettings(row: SettingsRow): Settings {
@@ -396,6 +464,7 @@ export function rowToSettings(row: SettingsRow): Settings {
     aggregateSameTaskPerDay: intToBool(row.aggregate_same_task_per_day),
     embedMetadata: intToBool(row.embed_metadata),
     hg1Scheme: row.hg1_scheme as Settings['hg1Scheme'],
+    fetchParentWorkItems: row.fetch_parent_work_items == null ? true : intToBool(row.fetch_parent_work_items),
   };
 }
 
@@ -418,5 +487,6 @@ export function settingsParams(s: Settings): readonly SqlParam[] {
     boolToInt(s.aggregateSameTaskPerDay),
     boolToInt(s.embedMetadata),
     s.hg1Scheme,
+    boolToInt(s.fetchParentWorkItems),
   ];
 }

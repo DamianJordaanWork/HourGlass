@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { parseISO } from 'date-fns';
 import type { IsoDate } from '@domain/common/types';
 import type { HarvestTimeEntry } from '@domain/harvest/harvest-types';
-import { durationHours, type TimeInterval } from '@domain/time/time-interval';
+import { durationHours, workItemLinksOf, type TimeInterval } from '@domain/time/time-interval';
 import { useContainer } from '@presentation/container-context';
 import { useSelectedDay } from '@presentation/state/selected-day';
 import {
@@ -246,12 +246,27 @@ function EntryCard({
   const actions = useTrackingActions(date);
   const running = interval.end === undefined;
   const hours = durationHours(interval, nowIso);
+  const links = workItemLinksOf(interval);
   return (
     <div className="flex items-center gap-3 rounded-lg border border-hairline bg-surface p-3">
       <span className="h-9 w-1.5 rounded-full" style={{ backgroundColor: projectColor(interval.harvestProjectId) }} />
       <div className="min-w-0 flex-1">
-        <div className="truncate text-sm font-medium text-ink">
-          {interval.projectName ? `${interval.projectName} · ${interval.taskName ?? ''}` : 'Unmapped'}
+        <div className="flex items-center gap-1.5">
+          <span className="truncate text-sm font-medium text-ink">
+            {interval.projectName ? `${interval.projectName} · ${interval.taskName ?? ''}` : 'Unmapped'}
+          </span>
+          {links.map((l) => (
+            <a
+              key={`${l.connectionId}:${l.workItemId}`}
+              href={l.url}
+              target="_blank"
+              rel="noreferrer"
+              title={l.title ?? `${l.workItemType} #${l.workItemId}`}
+              className="tabular shrink-0 rounded bg-elevated px-1.5 py-0.5 text-[10px] font-medium text-muted hover:text-ink"
+            >
+              #{l.workItemId}
+            </a>
+          ))}
         </div>
         <div className="truncate text-xs text-muted">
           {interval.notes || '—'} <span className="tabular">· {formatTimeRange(interval.start, interval.end)}</span>

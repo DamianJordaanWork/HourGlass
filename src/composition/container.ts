@@ -117,20 +117,29 @@ export function createContainer(): Container {
     // Reconfigure first so we know whether we're connected, THEN either seed demo
     // samples (unconfigured) or strip any leftover placeholder-id samples that
     // would otherwise 422 against real Harvest.
-    ready: reposReady.then(() => connections.reconfigure()).then(async () => {
-      if (isConfigured()) {
-        const removed = await clearBrokenDemoSeed(repos);
-        if (removed > 0) console.info(`[demo] removed ${removed} sample mapping(s) with placeholder Harvest ids`);
-      } else {
-        await seedDemo(repos);
-      }
-    }),
-    listWorkItems(wiql) {
+    ready: reposReady
+      .then(() => connections.reconfigure())
+      .then(async () => {
+        if (isConfigured()) {
+          const removed = await clearBrokenDemoSeed(repos);
+          if (removed > 0) console.info(`[demo] removed ${removed} sample mapping(s) with placeholder Harvest ids`);
+        } else {
+          await seedDemo(repos);
+        }
+      })
+      // Startup is best-effort: a failing secret store or a stalled probe must
+      // leave the app usable (and must not surface as an unhandled rejection),
+      // rather than taking the whole shell down with it (ADR-032).
+      .catch((e: unknown) => {
+        console.error('[startup] container initialization failed — the app will run with reduced functionality', e);
+      }),
+    async listWorkItems(wiql) {
       return fanOutWorkItems({
         ado: connections.ado(),
         listEnabledAdoConnections: async () => (await repos.adoConnections.list()).filter((c) => c.enabled),
         demoWorkItems,
         wiql,
+        fetchParents: (await repos.settings.get()).fetchParentWorkItems,
       });
     },
     async listMeetings(date) {

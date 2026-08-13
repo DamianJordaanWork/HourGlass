@@ -31,6 +31,10 @@ import {
 import { IcsCalendarSource } from '@infrastructure/calendar/ics-calendar-source';
 import { MicrosoftGraphCalendarSource } from '@infrastructure/calendar/microsoft-graph-calendar-source';
 import { GoogleCalendarSource } from '@infrastructure/calendar/google-calendar-source';
+import { withTimeout } from '@infrastructure/async/with-timeout';
+
+/** Tighter than the general HTTP budget — this step is optional enrichment. */
+const GUID_LEARN_TIMEOUT_MS = 8_000;
 
 const GRAPH_SCOPES = ['Calendars.Read', 'offline_access', 'openid', 'profile'];
 const MS_AUTHORIZE_URL = 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize';
@@ -179,8 +183,12 @@ export class ConnectionManager {
 
     // Best-effort: learn Harvest⇄ADO connection GUIDs from existing Harvest
     // entries so ADO's official widget binds to entries Hourglass creates
-    // (ADR-021). Never throws.
-    await this.learnHarvestGuids();
+    // (ADR-021). Never throws — and bounded separately, because this is a
+    // 90-day Harvest fetch sitting on the critical path of every Save; a slow
+    // Harvest must not make the Save button look hung (ADR-032).
+    await withTimeout(this.learnHarvestGuids(), 'Harvest GUID learn', GUID_LEARN_TIMEOUT_MS).catch((e: unknown) => {
+      console.warn('[ado] learnHarvestGuids timed out — continuing without it', e);
+    });
 
     // Calendars — a shared source per provider; each enabled account maps to it.
     const calendarAccounts = await this.deps.calendarAccounts.list();

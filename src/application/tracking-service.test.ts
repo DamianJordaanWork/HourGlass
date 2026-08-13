@@ -68,7 +68,7 @@ class FakeHarvest implements IHarvestClient {
 function makeService(clock: FakeClock, harvest?: FakeHarvest, adoGuid?: (connectionId: string) => Promise<string | undefined>) {
   const repos = createLocalRepositories(new MemoryStorage());
   let n = 0;
-  const ado = { calls: [] as { id: string; wi: number; delta: number }[], async listAssignedWorkItems() { return []; }, async queryWorkItems() { return []; }, async getWorkItem() { throw new Error('n/a'); }, async syncCompletedWork(id: string, wi: number, delta: number) { this.calls.push({ id, wi, delta }); } };
+  const ado = { calls: [] as { id: string; wi: number; delta: number }[], async listAssignedWorkItems() { return []; }, async queryWorkItems() { return []; }, async getWorkItem() { throw new Error('n/a'); }, async getWorkItems() { return []; }, async syncCompletedWork(id: string, wi: number, delta: number) { this.calls.push({ id, wi, delta }); } };
   const service = new TrackingService({
     intervals: repos.intervals,
     settings: repos.settings,
@@ -241,6 +241,129 @@ describe('TrackingService', () => {
     await service.updateInterval(i.id, { notes: 'linked+edited' });
     expect(harvest.created.length).toBe(before);
     expect(harvest.updated.some((u) => u.id === 999)).toBe(true);
+  });
+
+  describe('multiple ADO tickets per entry (ADR-029)', () => {
+    const linkTo = (workItemId: number, hours?: number) => ({
+      connectionId: 'c1',
+      workItemId,
+      workItemType: 'Task',
+      url: `https://dev.azure.com/x/_workitems/edit/${workItemId}`,
+      hours,
+    });
+
+    it('splits hours evenly across auto links and syncs each ticket', async () => {
+      const harvest = new FakeHarvest();
+      const { service, ado } = makeService(clock, harvest);
+      await service.logManualTime({
+        date: '2026-08-03',
+        source: 'WorkItem',
+        harvestProjectId: 1,
+        harvestTaskId: 2,
+        hours: 2,
+        workItemLinks: [linkTo(11), linkTo(22)],
+      });
+      expect(ado.calls).toEqual([
+        { id: 'c1', wi: 11, delta: 1 },
+        { id: 'c1', wi: 22, delta: 1 },
+      ]);
+      // Harvest's single external reference belongs to the primary ticket.
+      expect(harvest.created[0]!.externalReference?.id).toBe('AzureDevOps_Task_11');
+    });
+
+    it('honours explicit per-ticket hours', async () => {
+      const harvest = new FakeHarvest();
+      const { service, ado } = makeService(clock, harvest);
+      await service.logManualTime({
+        date: '2026-08-03',
+        source: 'WorkItem',
+        harvestProjectId: 1,
+        harvestTaskId: 2,
+        hours: 3,
+        workItemLinks: [linkTo(11, 0.5), linkTo(22)],
+      });
+      expect(ado.calls).toEqual([
+        { id: 'c1', wi: 11, delta: 0.5 },
+        { id: 'c1', wi: 22, delta: 2.5 },
+      ]);
+    });
+
+    it('adding a ticket on edit only credits the difference, never re-credits the first', async () => {
+      const harvest = new FakeHarvest();
+      const { service, ado } = makeService(clock, harvest);
+      const i = await service.logManualTime({
+        date: '2026-08-03',
+        source: 'WorkItem',
+        harvestProjectId: 1,
+        harvestTaskId: 2,
+        hours: 2,
+        workItemLinks: [linkTo(11)],
+      });
+      expect(ado.calls).toEqual([{ id: 'c1', wi: 11, delta: 2 }]);
+      ado.calls.length = 0;
+
+      const updated = await service.updateInterval(i.id, {
+        workItemLinks: [{ ...linkTo(11), syncedHours: 2 }, linkTo(22)],
+      });
+      // #11 drops from 2h to 1h, #22 gains 1h.
+      expect(ado.calls).toEqual([
+        { id: 'c1', wi: 11, delta: -1 },
+        { id: 'c1', wi: 22, delta: 1 },
+      ]);
+      expect(updated.workItemLinks?.map((l) => l.syncedHours)).toEqual([1, 1]);
+      expect(updated.workItemRef?.workItemId).toBe(11);
+    });
+
+    it('clears every ticket when given an empty list', async () => {
+      const harvest = new FakeHarvest();
+      const { service } = makeService(clock, harvest);
+      const i = await service.logManualTime({
+        date: '2026-08-03',
+        source: 'WorkItem',
+        harvestProjectId: 1,
+        harvestTaskId: 2,
+        hours: 1,
+        workItemLinks: [linkTo(11)],
+      });
+      const cleared = await service.updateInterval(i.id, { workItemLinks: [] });
+      expect(cleared.workItemLinks).toBeUndefined();
+      expect(cleared.workItemRef).toBeUndefined();
+    });
+
+    it('gives every ticket back its own credited hours on delete', async () => {
+      const harvest = new FakeHarvest();
+      const { service, ado } = makeService(clock, harvest);
+      const i = await service.logManualTime({
+        date: '2026-08-03',
+        source: 'WorkItem',
+        harvestProjectId: 1,
+        harvestTaskId: 2,
+        hours: 3,
+        workItemLinks: [linkTo(11, 1), linkTo(22)],
+      });
+      ado.calls.length = 0;
+      await service.deleteInterval(i.id);
+      expect(ado.calls).toEqual([
+        { id: 'c1', wi: 11, delta: -1 },
+        { id: 'c1', wi: 22, delta: -2 },
+      ]);
+    });
+
+    it('still reverses a pre-multi-ticket interval that only has workItemRef', async () => {
+      const harvest = new FakeHarvest();
+      const { service, ado } = makeService(clock, harvest);
+      const i = await service.logManualTime({
+        date: '2026-08-03',
+        source: 'WorkItem',
+        harvestProjectId: 1,
+        harvestTaskId: 2,
+        hours: 1.5,
+        workItemRef: { connectionId: 'c1', workItemId: 4821, workItemType: 'User Story', url: 'u' },
+      });
+      ado.calls.length = 0;
+      await service.deleteInterval(i.id);
+      expect(ado.calls).toEqual([{ id: 'c1', wi: 4821, delta: -1.5 }]);
+    });
   });
 
   describe('linkToHarvestEntry reconciliation (ADR-022)', () => {

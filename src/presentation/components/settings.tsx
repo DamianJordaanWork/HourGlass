@@ -47,7 +47,19 @@ const ghostBtn =
   'rounded-lg border border-hairline px-3 py-2 text-sm font-medium text-muted hover:text-ink';
 
 function ProbeBadge({ probe }: { probe?: Probe }) {
-  if (!probe || probe.state === 'idle') return null;
+  // `idle` used to render nothing at all, which made a connection that never
+  // came up indistinguishable from one that was never configured — the user saw
+  // a Save that appeared to do nothing. Always say something.
+  if (!probe || probe.state === 'idle') {
+    return (
+      <span
+        className="rounded-full bg-elevated px-2 py-0.5 text-[11px] font-medium text-muted"
+        title="No live client was built — usually a missing or unreadable token."
+      >
+        Not connected
+      </span>
+    );
+  }
   if (probe.state === 'ok') {
     return (
       <span className="rounded-full bg-accent-soft px-2 py-0.5 text-[11px] font-medium text-accent-soft-text">
@@ -59,6 +71,23 @@ function ProbeBadge({ probe }: { probe?: Probe }) {
     <span className="rounded-full bg-[color:var(--danger)]/10 px-2 py-0.5 text-[11px] font-medium text-danger" title={probe.error}>
       Failed · {truncate(probe.error, 60)}
     </span>
+  );
+}
+
+/**
+ * A rejected mutation used to be invisible: the button simply stopped spinning
+ * and `mutation.error` was never rendered, so a failing secret write looked
+ * like a successful save that did nothing.
+ */
+function MutationError({ error, what }: { error: unknown; what: string }) {
+  if (!error) return null;
+  const message = error instanceof Error ? error.message : String(error);
+  const cause = error instanceof Error && error.cause instanceof Error ? error.cause.message : undefined;
+  return (
+    <p className="text-[11px] text-danger" role="alert">
+      {what} failed: {message}
+      {cause && cause !== message ? ` (${cause})` : ''}
+    </p>
   );
 }
 
@@ -109,6 +138,13 @@ function HarvestSection() {
         )}
         <ProbeBadge probe={probe} />
       </div>
+      <MutationError error={saveHarvest.error} what="Save" />
+      <MutationError error={clearHarvest.error} what="Disconnect" />
+      {saveHarvest.isSuccess && !hasToken && (
+        <p className="text-[11px] text-warning">
+          Saved, but no token is stored — re-enter the personal access token and save again.
+        </p>
+      )}
     </Card>
   );
 }
@@ -199,6 +235,8 @@ function AdoSection() {
             {editing && <button className={ghostBtn} onClick={() => setForm(emptyAdo)}>Cancel</button>}
             {!editing && <ProbeBadge probe={saveAdo.data} />}
           </div>
+          <MutationError error={saveAdo.error} what="Save" />
+          <MutationError error={deleteAdo.error} what="Remove" />
         </div>
       </div>
     </Card>
@@ -457,6 +495,16 @@ function WorkdaySection() {
       <label className="flex items-center gap-2 text-sm text-ink">
         <input type="checkbox" checked={draft.aggregateSameTaskPerDay} onChange={(e) => set({ aggregateSameTaskPerDay: e.target.checked })} />
         Roll same-task sessions into one Harvest entry per day
+      </label>
+      <label className="flex items-start gap-2 text-sm text-ink">
+        <input className="mt-0.5" type="checkbox" checked={draft.fetchParentWorkItems} onChange={(e) => set({ fetchParentWorkItems: e.target.checked })} />
+        <span>
+          Fetch the parent user story of assigned tasks
+          <span className="mt-0.5 block text-xs text-muted">
+            One extra request per connection so orphaned tasks can nest under their story in the rail. Stories never
+            pull their feature.
+          </span>
+        </span>
       </label>
       <div className="flex items-center gap-3">
         <button className={primaryBtn} onClick={() => saveSettings.mutate(draft)} disabled={saveSettings.isPending}>

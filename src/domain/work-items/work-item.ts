@@ -11,6 +11,8 @@ export interface WorkItem {
   readonly areaPath: string;
   readonly assignedTo?: string;
   readonly tags: readonly string[];
+  /** `System.Parent` — the work item this one hangs off, when it has one. */
+  readonly parentId?: number;
   /** Which configured ADO connection this came from. */
   readonly connectionId: string;
   readonly url: string;

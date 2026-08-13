@@ -1,7 +1,8 @@
 import type { ISqlDatabase, ISqlExecutor, SqlExecuteResult, SqlParam } from '@infrastructure/persistence/sql/sql-database';
 import { runMigrations } from '@infrastructure/persistence/sql/migration-runner';
 import { MIGRATIONS, type Migration } from '@infrastructure/persistence/sql/migrations';
-import { SqlError } from '@infrastructure/persistence/sql/sql-error';
+import { driverErrorMessage, SqlError } from '@infrastructure/persistence/sql/sql-error';
+import { healingMemo, IPC_TIMEOUT_MS, withTimeout } from '@infrastructure/async/with-timeout';
 import type { TauriSqlDriver } from '@infrastructure/persistence/sql/tauri-sql-driver';
 
 /** Coerce booleans (the plugin-sql driver rejects them) — same normalization as `WasmSqlDatabase`. */
@@ -32,6 +33,8 @@ export interface TauriSqlDatabaseConfig {
   /** Obtains the connected driver (deferred so construction stays synchronous/side-effect-free). */
   readonly loadDriver: () => Promise<TauriSqlDriver>;
   readonly migrations?: readonly Migration[];
+  /** Ceiling on each driver call. Defaults to {@link IPC_TIMEOUT_MS}. */
+  readonly timeoutMs?: number;
 }
 
 /**
@@ -43,12 +46,21 @@ export interface TauriSqlDatabaseConfig {
  */
 export class TauriSqlDatabase implements ISqlDatabase {
   private driver: TauriSqlDriver | undefined;
-  private ready: Promise<void> | undefined;
+  private readonly timeoutMs: number;
+  /**
+   * Healing memo: a stalled/failed init is discarded so the next call retries,
+   * rather than every future query awaiting one poisoned promise (ADR-032).
+   */
+  private readonly ensureReady: () => Promise<void>;
 
-  constructor(private readonly config: TauriSqlDatabaseConfig) {}
+  constructor(private readonly config: TauriSqlDatabaseConfig) {
+    this.timeoutMs = config.timeoutMs ?? IPC_TIMEOUT_MS;
+    // Init is generous: it opens the file AND runs every outstanding migration.
+    this.ensureReady = healingMemo(() => this.init(), 'SQLite init', this.timeoutMs * 6);
+  }
 
   private async init(): Promise<void> {
-    this.driver = await this.config.loadDriver();
+    this.driver = await withTimeout(this.config.loadDriver(), 'SQLite driver load', this.timeoutMs);
     await this.rawExecute('PRAGMA foreign_keys = ON');
     // Use the raw (non-ready-gated) executor here — awaiting `ensureReady()`
     // from inside the promise that *is* `ensureReady()` would deadlock.
@@ -56,11 +68,6 @@ export class TauriSqlDatabase implements ISqlDatabase {
       { ...this.rawExecutor(), transaction: (work) => this.rawTransaction(work) },
       this.config.migrations ?? MIGRATIONS,
     );
-  }
-
-  private ensureReady(): Promise<void> {
-    if (!this.ready) this.ready = this.init();
-    return this.ready;
   }
 
   private getDriver(): TauriSqlDriver {
@@ -84,12 +91,16 @@ export class TauriSqlDatabase implements ISqlDatabase {
   private async rawExecute(sql: string, params: readonly SqlParam[] = []): Promise<SqlExecuteResult> {
     const driver = this.getDriver();
     try {
-      const result = await driver.execute(toPositionalDollar(sql), normalizeParams(params));
+      const result = await withTimeout(
+        driver.execute(toPositionalDollar(sql), normalizeParams(params)),
+        'SQLite execute',
+        this.timeoutMs,
+      );
       return result.lastInsertId === undefined
         ? { rowsAffected: result.rowsAffected }
         : { rowsAffected: result.rowsAffected, lastInsertId: result.lastInsertId };
     } catch (e) {
-      throw new SqlError(e instanceof Error ? e.message : 'tauri-sql execute failed', sql, e);
+      throw new SqlError(driverErrorMessage(e, 'tauri-sql execute failed'), sql, e);
     }
   }
 
@@ -101,9 +112,13 @@ export class TauriSqlDatabase implements ISqlDatabase {
   private async rawQuery<T>(sql: string, params: readonly SqlParam[] = []): Promise<readonly T[]> {
     const driver = this.getDriver();
     try {
-      return await driver.select<T[]>(toPositionalDollar(sql), normalizeParams(params));
+      return await withTimeout(
+        driver.select<T[]>(toPositionalDollar(sql), normalizeParams(params)),
+        'SQLite query',
+        this.timeoutMs,
+      );
     } catch (e) {
-      throw new SqlError(e instanceof Error ? e.message : 'tauri-sql query failed', sql, e);
+      throw new SqlError(driverErrorMessage(e, 'tauri-sql query failed'), sql, e);
     }
   }
 
@@ -112,22 +127,28 @@ export class TauriSqlDatabase implements ISqlDatabase {
     return this.rawTransaction(work);
   }
 
+  /**
+   * Runs `work` WITHOUT `BEGIN`/`COMMIT` — deliberately, and not because
+   * atomicity doesn't matter (ADR-033).
+   *
+   * `tauri-plugin-sql` sends every statement through its own `invoke` call, and
+   * each one is served by `sqlx`'s connection `Pool` (10 connections by
+   * default) as a *prepared* query. So a `BEGIN` issued by one call and the
+   * `COMMIT` issued by the next land on different connections, and SQLite
+   * rejects the commit with "cannot commit - no transaction is active". The
+   * plugin exposes no transaction API, no way to pin a connection, and no way
+   * to size the pool, and multi-statement SQL is impossible through a prepared
+   * query — so there is no way to be atomic across the IPC boundary.
+   *
+   * The consequence: a multi-statement write (e.g. a mapping rule's
+   * delete-then-reinsert of its conditions) can be left half-applied if the app
+   * dies mid-write. That matches the localStorage backend, which has never been
+   * atomic either; `WasmSqlDatabase` (web) keeps real transactions.
+   */
   private async rawTransaction<T>(work: (tx: ISqlExecutor) => Promise<T>): Promise<T> {
     try {
-      await this.rawExecute('BEGIN');
+      return await work(this.rawExecutor());
     } catch (e) {
-      throw new SqlError(e instanceof Error ? e.message : 'tauri-sql BEGIN failed', 'BEGIN', e);
-    }
-    try {
-      const result = await work(this.rawExecutor());
-      await this.rawExecute('COMMIT');
-      return result;
-    } catch (e) {
-      try {
-        await this.rawExecute('ROLLBACK');
-      } catch {
-        // best-effort — the original error is what matters.
-      }
       if (e instanceof SqlError) throw e;
       throw new SqlError(e instanceof Error ? e.message : 'transaction failed', 'TRANSACTION', e);
     }

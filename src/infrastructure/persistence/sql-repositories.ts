@@ -8,9 +8,11 @@ import type {
   IQuickTemplateRepository,
   ISettingsRepository,
   ITimeIntervalRepository,
+  IWorkItemSectionRepository,
 } from '@domain/ports';
 import type { TimeInterval } from '@domain/time/time-interval';
 import type { MappingRule } from '@domain/templates/mapping';
+import type { WorkItemSection } from '@domain/work-items/work-item-section';
 import type { CalendarAccount, Meeting } from '@domain/calendar/meeting';
 import type { QuickTemplate } from '@domain/templates/quick-template';
 import type { Note } from '@domain/notes/note';
@@ -41,10 +43,14 @@ import {
   rowToQuickTemplate,
   rowToSettings,
   rowToTimeInterval,
+  rowToWorkItemSection,
   type SettingsRow,
   settingsParams,
   type TimeIntervalRow,
   timeIntervalParams,
+  type WorkItemSectionConditionRow,
+  type WorkItemSectionRow,
+  workItemSectionParams,
 } from '@infrastructure/persistence/sql/sql-mappers';
 
 class SqlTimeIntervalRepository implements ITimeIntervalRepository {
@@ -77,8 +83,9 @@ class SqlTimeIntervalRepository implements ITimeIntervalRepository {
     await this.db.execute(
       `INSERT OR REPLACE INTO time_interval
         (id, date, harvest_project_id, harvest_task_id, project_name, task_name, notes, start_time, end_time,
-         is_manual, harvest_time_entry_id, synced_hours, source, work_item_ref, template_id, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         is_manual, harvest_time_entry_id, synced_hours, source, work_item_ref, work_item_refs, template_id,
+         created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       timeIntervalParams(interval),
     );
   }
@@ -120,6 +127,43 @@ class SqlMappingRuleRepository implements IMappingRuleRepository {
   async delete(id: Id): Promise<void> {
     // mapping_condition rows cascade via ON DELETE CASCADE (PRAGMA foreign_keys=ON).
     await this.db.execute('DELETE FROM mapping_rule WHERE id = ?', [id]);
+  }
+}
+
+class SqlWorkItemSectionRepository implements IWorkItemSectionRepository {
+  constructor(private readonly db: ISqlDatabase) {}
+
+  async list(): Promise<WorkItemSection[]> {
+    const sections = await this.db.query<WorkItemSectionRow>('SELECT * FROM work_item_section ORDER BY sort_order');
+    const conditions = await this.db.query<WorkItemSectionConditionRow>(
+      'SELECT * FROM work_item_section_condition ORDER BY seq',
+    );
+    return sections.map((s) => rowToWorkItemSection(s, conditions.filter((c) => c.section_id === s.id)));
+  }
+
+  async upsert(section: WorkItemSection): Promise<void> {
+    await this.db.transaction(async (tx) => {
+      await tx.execute(
+        `INSERT OR REPLACE INTO work_item_section
+          (id, label, sort_order, enabled, default_collapsed, nest_under_parent, group_by_parent, sort_by, sort_direction)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        workItemSectionParams(section),
+      );
+      await tx.execute('DELETE FROM work_item_section_condition WHERE section_id = ?', [section.id]);
+      let seq = 0;
+      for (const condition of section.conditions) {
+        await tx.execute(
+          'INSERT INTO work_item_section_condition (section_id, seq, field, operator, value, negate) VALUES (?, ?, ?, ?, ?, ?)',
+          mappingConditionParams(section.id, seq, condition),
+        );
+        seq += 1;
+      }
+    });
+  }
+
+  async delete(id: Id): Promise<void> {
+    // work_item_section_condition rows cascade via ON DELETE CASCADE.
+    await this.db.execute('DELETE FROM work_item_section WHERE id = ?', [id]);
   }
 }
 
@@ -259,19 +303,21 @@ class SqlSettingsRepository implements ISettingsRepository {
       `INSERT OR REPLACE INTO settings
         (id, work_day_start, work_day_end, break_minutes, min_dead_time_minutes, weekly_goal_hours,
          refresh_interval_minutes, theme, harvest_account_id, microsoft_client_id, google_client_id,
-         default_project_id, default_task_id, auto_stop_on_switch, aggregate_same_task_per_day, embed_metadata, hg1_scheme)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         default_project_id, default_task_id, auto_stop_on_switch, aggregate_same_task_per_day, embed_metadata,
+         hg1_scheme, fetch_parent_work_items)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       settingsParams(settings),
     );
     return settings;
   }
 }
 
-/** Wires the 8 SQL repos against a single `ISqlDatabase`. See ADR-014. */
+/** Wires the SQL repos against a single `ISqlDatabase`. See ADR-014. */
 export function createSqlRepositories(db: ISqlDatabase): AppRepositories {
   return {
     intervals: new SqlTimeIntervalRepository(db),
     mappingRules: new SqlMappingRuleRepository(db),
+    workItemSections: new SqlWorkItemSectionRepository(db),
     calendarAccounts: new SqlCalendarAccountRepository(db),
     meetings: new SqlMeetingRepository(db),
     quickTemplates: new SqlQuickTemplateRepository(db),

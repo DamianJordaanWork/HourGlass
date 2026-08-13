@@ -8,12 +8,20 @@ import type {
 } from '@domain/templates/mapping';
 import { MeetingField, WorkItemField } from '@domain/templates/mapping';
 import type { QuickTemplate } from '@domain/templates/quick-template';
+import type {
+  SectionSortField,
+  SortDirection,
+  WorkItemSection,
+} from '@domain/work-items/work-item-section';
+import { newWorkItemSection, SECTION_SORT_FIELDS } from '@domain/work-items/work-item-section';
 import { HarvestPicker } from '@presentation/components/harvest-picker';
 import {
   useHarvestOptions,
   useMappingRules,
   useTemplateActions,
   useTemplatesData,
+  useWorkItemSectionActions,
+  useWorkItemSections,
 } from '@presentation/hooks/use-templates';
 
 const OPERATORS: ConditionOperator[] = ['equals', 'contains', 'startsWith', 'regex', 'in', 'underPath'];
@@ -31,6 +39,7 @@ export function TemplatesPane() {
     <div className="mx-auto flex max-w-3xl flex-col gap-6">
       <h2 className="text-lg font-semibold">Templates &amp; mapping</h2>
       <MappingRulesSection />
+      <WorkItemSectionsSection />
       <QuickTemplatesSection />
     </div>
   );
@@ -146,11 +155,6 @@ function RuleEditor({
     [rule.ruleType],
   );
   const set = (patch: Partial<MappingRule>) => setRule((r) => ({ ...r, ...patch }));
-  const setCondition = (i: number, patch: Partial<MappingCondition>) =>
-    set({ conditions: rule.conditions.map((c, idx) => (idx === i ? { ...c, ...patch } : c)) });
-  const addCondition = () =>
-    set({ conditions: [...rule.conditions, { field: fields[0]!, operator: 'equals', value: '' }] });
-  const removeCondition = (i: number) => set({ conditions: rule.conditions.filter((_, idx) => idx !== i) });
 
   return (
     <div className="flex flex-col gap-3 rounded-lg border border-dashed border-hairline p-4">
@@ -180,38 +184,12 @@ function RuleEditor({
         </label>
       </div>
 
-      <div>
-        <div className="mb-1 flex items-center justify-between">
-          {labelCls('Conditions (all must match)')}
-          <button className={smallGhost} onClick={addCondition}>+ Add</button>
-        </div>
-        {rule.conditions.length === 0 ? (
-          <p className="text-xs text-muted">No conditions — this rule matches every {rule.ruleType === 'WorkItem' ? 'work item' : 'meeting'}.</p>
-        ) : (
-          <div className="flex flex-col gap-2">
-            {rule.conditions.map((c, i) => (
-              <div key={i} className="flex items-center gap-2">
-                <select className={selectCls + ' w-32'} value={c.field} onChange={(e) => setCondition(i, { field: e.target.value })}>
-                  {fields.map((f) => (
-                    <option key={f} value={f}>{f}</option>
-                  ))}
-                </select>
-                <select className={selectCls + ' w-28'} value={c.operator} onChange={(e) => setCondition(i, { operator: e.target.value as ConditionOperator })}>
-                  {OPERATORS.map((o) => (
-                    <option key={o} value={o}>{o}</option>
-                  ))}
-                </select>
-                <input className={inputCls + ' flex-1'} value={c.value} onChange={(e) => setCondition(i, { value: e.target.value })} placeholder="value" />
-                <label className="flex items-center gap-1 text-xs text-muted" title="Invert this condition">
-                  <input type="checkbox" checked={c.negate ?? false} onChange={(e) => setCondition(i, { negate: e.target.checked })} />
-                  not
-                </label>
-                <button className="rounded-md border border-hairline px-2 py-1 text-xs text-muted hover:text-danger" onClick={() => removeCondition(i)} aria-label="Remove condition">✕</button>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
+      <ConditionRows
+        conditions={rule.conditions}
+        fields={fields}
+        emptyHint={`No conditions — this rule matches every ${rule.ruleType === 'WorkItem' ? 'work item' : 'meeting'}.`}
+        onChange={(conditions) => set({ conditions })}
+      />
 
       <div>
         <div className="mb-1">{labelCls('Maps to')}</div>
@@ -229,6 +207,209 @@ function RuleEditor({
 
       <div className="flex items-center gap-3">
         <button className={primaryBtn} onClick={() => onSave(rule)} disabled={!rule.name.trim() || !rule.target.harvestProjectId}>Save rule</button>
+        <button className={ghostBtn} onClick={onCancel}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The field/operator/value condition editor, shared by mapping rules and
+ * work-item sections so both speak the same filter language.
+ */
+function ConditionRows({
+  conditions,
+  fields,
+  emptyHint,
+  onChange,
+}: {
+  conditions: readonly MappingCondition[];
+  fields: readonly string[];
+  emptyHint: string;
+  onChange: (conditions: MappingCondition[]) => void;
+}) {
+  const setCondition = (i: number, patch: Partial<MappingCondition>) =>
+    onChange(conditions.map((c, idx) => (idx === i ? { ...c, ...patch } : c)));
+
+  return (
+    <div>
+      <div className="mb-1 flex items-center justify-between">
+        {labelCls('Conditions (all must match)')}
+        <button
+          className={smallGhost}
+          onClick={() => onChange([...conditions, { field: fields[0]!, operator: 'equals', value: '' }])}
+        >
+          + Add
+        </button>
+      </div>
+      {conditions.length === 0 ? (
+        <p className="text-xs text-muted">{emptyHint}</p>
+      ) : (
+        <div className="flex flex-col gap-2">
+          {conditions.map((c, i) => (
+            <div key={i} className="flex items-center gap-2">
+              <select className={selectCls + ' w-32'} value={c.field} onChange={(e) => setCondition(i, { field: e.target.value })}>
+                {fields.map((f) => (
+                  <option key={f} value={f}>{f}</option>
+                ))}
+              </select>
+              <select className={selectCls + ' w-28'} value={c.operator} onChange={(e) => setCondition(i, { operator: e.target.value as ConditionOperator })}>
+                {OPERATORS.map((o) => (
+                  <option key={o} value={o}>{o}</option>
+                ))}
+              </select>
+              <input className={inputCls + ' flex-1'} value={c.value} onChange={(e) => setCondition(i, { value: e.target.value })} placeholder="value" />
+              <label className="flex items-center gap-1 text-xs text-muted" title="Invert this condition">
+                <input type="checkbox" checked={c.negate ?? false} onChange={(e) => setCondition(i, { negate: e.target.checked })} />
+                not
+              </label>
+              <button
+                className="rounded-md border border-hairline px-2 py-1 text-xs text-muted hover:text-danger"
+                onClick={() => onChange(conditions.filter((_, idx) => idx !== i))}
+                aria-label="Remove condition"
+              >
+                ✕
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Work-item sections ──────────────────────────────────────────────────────
+function WorkItemSectionsSection() {
+  const { data: sections } = useWorkItemSections();
+  const actions = useWorkItemSectionActions();
+  const [editing, setEditing] = useState<WorkItemSection | null>(null);
+
+  return (
+    <Card
+      title="Work item sections"
+      subtitle="Group the work-item rail. The first enabled section (by order) whose conditions match claims a ticket; anything unmatched falls into “Other”."
+      action={
+        !editing && (
+          <button className={primaryBtn} onClick={() => setEditing(newWorkItemSection(actions.newId(), (sections?.length ?? 0) * 10 + 10))}>
+            New section
+          </button>
+        )
+      }
+    >
+      {editing ? (
+        <SectionEditor
+          key={editing.id}
+          initial={editing}
+          onCancel={() => setEditing(null)}
+          onSave={(s) => actions.save.mutate(s, { onSuccess: () => setEditing(null) })}
+        />
+      ) : !sections?.length ? (
+        <Empty>No sections yet — every ticket lands in “Other”.</Empty>
+      ) : (
+        <ul className="flex flex-col gap-2">
+          {sections.map((s) => (
+            <li key={s.id} className="flex items-center gap-3 rounded-lg border border-hairline bg-canvas px-3 py-2">
+              <span className="w-8 shrink-0 text-center text-xs tabular text-muted">{s.sortOrder}</span>
+              <div className="min-w-0 flex-1">
+                <div className={'truncate text-sm font-medium ' + (s.enabled ? 'text-ink' : 'text-muted line-through')}>{s.label || '(unnamed)'}</div>
+                <div className="truncate text-xs text-muted">{sectionSummary(s)}</div>
+              </div>
+              <button className={smallGhost} onClick={() => actions.save.mutate({ ...s, enabled: !s.enabled })} title="Toggle enabled">
+                {s.enabled ? 'On' : 'Off'}
+              </button>
+              <button className={smallGhost} onClick={() => setEditing(s)}>Edit</button>
+              <button className="rounded-md border border-hairline px-2 py-1 text-xs text-muted hover:text-danger" onClick={() => actions.remove.mutate(s.id)} aria-label="Delete section">✕</button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </Card>
+  );
+}
+
+function sectionSummary(s: WorkItemSection): string {
+  const conditions =
+    s.conditions.length === 0
+      ? 'matches everything'
+      : s.conditions.map((c) => `${c.negate ? 'NOT ' : ''}${c.field} ${c.operator} "${c.value}"`).join(' AND ');
+  const sort = s.sortBy === 'default' ? 'ADO order' : `${s.sortBy} ${s.sortDirection}`;
+  return `${conditions} · ${sort}${s.groupByParent ? ' · grouped by parent' : ''}`;
+}
+
+function SectionEditor({
+  initial,
+  onSave,
+  onCancel,
+}: {
+  initial: WorkItemSection;
+  onSave: (section: WorkItemSection) => void;
+  onCancel: () => void;
+}) {
+  const [section, setSection] = useState<WorkItemSection>(initial);
+  const set = (patch: Partial<WorkItemSection>) => setSection((s) => ({ ...s, ...patch }));
+  const fields = useMemo(() => Object.values(WorkItemField), []);
+
+  return (
+    <div className="flex flex-col gap-3 rounded-lg border border-dashed border-hairline p-4">
+      <div className="grid grid-cols-2 gap-3">
+        <label className="flex flex-col gap-1">
+          {labelCls('Label')}
+          <input className={inputCls} value={section.label} onChange={(e) => set({ label: e.target.value })} placeholder="e.g. Bugs" />
+        </label>
+        <label className="flex flex-col gap-1">
+          {labelCls('Order (lower shows first)')}
+          <input className={inputCls} type="number" value={section.sortOrder} onChange={(e) => set({ sortOrder: Number(e.target.value) })} />
+        </label>
+      </div>
+
+      <ConditionRows
+        conditions={section.conditions}
+        fields={fields}
+        emptyHint="No conditions — this section claims every ticket that no earlier section took."
+        onChange={(conditions) => set({ conditions })}
+      />
+
+      <div>
+        <div className="mb-1">{labelCls('Ordering')}</div>
+        <div className="flex flex-wrap items-center gap-2">
+          <select className={selectCls + ' w-40'} value={section.sortBy} onChange={(e) => set({ sortBy: e.target.value as SectionSortField })} aria-label="Sort by">
+            {SECTION_SORT_FIELDS.map((f) => (
+              <option key={f} value={f}>{f === 'default' ? 'ADO order' : f}</option>
+            ))}
+          </select>
+          <select
+            className={selectCls + ' w-32'}
+            value={section.sortDirection}
+            onChange={(e) => set({ sortDirection: e.target.value as SortDirection })}
+            disabled={section.sortBy === 'default'}
+            aria-label="Sort direction"
+          >
+            <option value="asc">ascending</option>
+            <option value="desc">descending</option>
+          </select>
+        </div>
+        <div className="mt-2 flex flex-col gap-1.5">
+          <label className="flex items-center gap-2 text-sm text-ink">
+            <input type="checkbox" checked={section.nestUnderParent} onChange={(e) => set({ nestUnderParent: e.target.checked })} />
+            Nest children under their parent
+          </label>
+          <label className="flex items-center gap-2 text-sm text-ink" title="Keeps tickets sharing a parent together even when that parent isn't in the list">
+            <input type="checkbox" checked={section.groupByParent} onChange={(e) => set({ groupByParent: e.target.checked })} />
+            Group items with the same parent together
+          </label>
+          <label className="flex items-center gap-2 text-sm text-ink">
+            <input type="checkbox" checked={section.defaultCollapsed} onChange={(e) => set({ defaultCollapsed: e.target.checked })} />
+            Collapsed by default
+          </label>
+          <label className="flex items-center gap-2 text-sm text-ink">
+            <input type="checkbox" checked={section.enabled} onChange={(e) => set({ enabled: e.target.checked })} />
+            Enabled
+          </label>
+        </div>
+      </div>
+
+      <div className="flex items-center gap-3">
+        <button className={primaryBtn} onClick={() => onSave(section)} disabled={!section.label.trim()}>Save section</button>
         <button className={ghostBtn} onClick={onCancel}>Cancel</button>
       </div>
     </div>

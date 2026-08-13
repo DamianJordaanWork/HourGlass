@@ -3,15 +3,29 @@ import type { WorkItem } from '@domain/work-items/work-item';
 import type { Meeting } from '@domain/calendar/meeting';
 import type { MappingRule } from '@domain/templates/mapping';
 import type { QuickTemplate } from '@domain/templates/quick-template';
+import { DEFAULT_SECTION_ORDERING, type WorkItemSection } from '@domain/work-items/work-item-section';
 import type { AppRepositories } from '@infrastructure/persistence/app-repositories';
 
 const CONN = 'demo';
 
+const url = (project: string, id: number) =>
+  `https://dev.azure.com/agile-bridge/${encodeURIComponent(project)}/_workitems/edit/${id}`;
+
+/**
+ * Deliberately shaped to exercise the rail: a Feature with two Stories beneath
+ * it, Tasks under one of those, and two Stories whose Feature (#4700) was never
+ * fetched — the case section grouping handles without another ADO round-trip.
+ */
 export const demoWorkItems: WorkItem[] = [
-  { id: 4821, title: 'Fix login redirect loop', workItemType: 'Bug', state: 'Active', project: 'LetsDrive', iterationPath: 'LetsDrive\\Sprint 12', areaPath: 'LetsDrive\\Web\\Auth', assignedTo: 'Damian', tags: ['frontend', 'urgent'], connectionId: CONN, url: 'https://dev.azure.com/agile-bridge/LetsDrive/_workitems/edit/4821' },
-  { id: 4830, title: 'Driver onboarding wizard — step 3 validation', workItemType: 'User Story', state: 'Active', project: 'LetsDrive', iterationPath: 'LetsDrive\\Sprint 12', areaPath: 'LetsDrive\\Web', assignedTo: 'Damian', tags: ['frontend'], connectionId: CONN, url: 'https://dev.azure.com/agile-bridge/LetsDrive/_workitems/edit/4830' },
-  { id: 5102, title: 'TFN payment reconciliation job', workItemType: 'User Story', state: 'New', project: 'TFN Project', iterationPath: 'TFN Project\\Sprint 8', areaPath: 'TFN Project\\Backend', assignedTo: 'Damian', tags: ['backend'], connectionId: CONN, url: 'https://dev.azure.com/agile-bridge/TFN%20Project/_workitems/edit/5102' },
-  { id: 6001, title: 'Grad 2026 — mentor pairing algorithm', workItemType: 'Task', state: 'Active', project: 'Grad2026', iterationPath: 'Grad2026\\Onboarding', areaPath: 'Grad2026', assignedTo: 'Damian', tags: [], connectionId: CONN, url: 'https://dev.azure.com/agile-bridge/Grad2026/_workitems/edit/6001' },
+  { id: 4800, title: 'Driver onboarding revamp', workItemType: 'Feature', state: 'Active', project: 'LetsDrive', iterationPath: 'LetsDrive\\Sprint 12', areaPath: 'LetsDrive\\Web', assignedTo: 'Damian', tags: [], connectionId: CONN, url: url('LetsDrive', 4800) },
+  { id: 4821, title: 'Fix login redirect loop', workItemType: 'Bug', state: 'Active', project: 'LetsDrive', iterationPath: 'LetsDrive\\Sprint 12', areaPath: 'LetsDrive\\Web\\Auth', assignedTo: 'Damian', tags: ['frontend', 'urgent'], connectionId: CONN, url: url('LetsDrive', 4821) },
+  { id: 4830, title: 'Driver onboarding wizard — step 3 validation', workItemType: 'User Story', state: 'Active', project: 'LetsDrive', iterationPath: 'LetsDrive\\Sprint 12', areaPath: 'LetsDrive\\Web', assignedTo: 'Damian', tags: ['frontend'], parentId: 4800, connectionId: CONN, url: url('LetsDrive', 4830) },
+  { id: 4831, title: 'Wire step 3 validation to the API', workItemType: 'Task', state: 'Active', project: 'LetsDrive', iterationPath: 'LetsDrive\\Sprint 12', areaPath: 'LetsDrive\\Web', assignedTo: 'Damian', tags: ['frontend'], parentId: 4830, connectionId: CONN, url: url('LetsDrive', 4831) },
+  { id: 4832, title: 'Error states for step 3', workItemType: 'Task', state: 'New', project: 'LetsDrive', iterationPath: 'LetsDrive\\Sprint 12', areaPath: 'LetsDrive\\Web', assignedTo: 'Damian', tags: ['frontend'], parentId: 4830, connectionId: CONN, url: url('LetsDrive', 4832) },
+  { id: 4840, title: 'Document upload for new drivers', workItemType: 'User Story', state: 'New', project: 'LetsDrive', iterationPath: 'LetsDrive\\Sprint 12', areaPath: 'LetsDrive\\Web', assignedTo: 'Damian', tags: [], parentId: 4800, connectionId: CONN, url: url('LetsDrive', 4840) },
+  { id: 5102, title: 'TFN payment reconciliation job', workItemType: 'User Story', state: 'New', project: 'TFN Project', iterationPath: 'TFN Project\\Sprint 8', areaPath: 'TFN Project\\Backend', assignedTo: 'Damian', tags: ['backend'], parentId: 4700, connectionId: CONN, url: url('TFN Project', 5102) },
+  { id: 5108, title: 'TFN settlement export', workItemType: 'User Story', state: 'New', project: 'TFN Project', iterationPath: 'TFN Project\\Sprint 8', areaPath: 'TFN Project\\Backend', assignedTo: 'Damian', tags: ['backend'], parentId: 4700, connectionId: CONN, url: url('TFN Project', 5108) },
+  { id: 6001, title: 'Grad 2026 — mentor pairing algorithm', workItemType: 'Task', state: 'Active', project: 'Grad2026', iterationPath: 'Grad2026\\Onboarding', areaPath: 'Grad2026', assignedTo: 'Damian', tags: [], connectionId: CONN, url: url('Grad2026', 6001) },
 ];
 
 export function demoMeetings(date: IsoDate): Meeting[] {
@@ -36,10 +50,19 @@ const demoQuickTemplates: QuickTemplate[] = [
   { id: 'qt-admin', label: 'Admin / Email', icon: '✉️', color: '#F59E0B', harvestProjectId: 1003, harvestTaskId: 40, defaultNotes: '', sortOrder: 3, enabled: true },
 ];
 
+const demoSections: WorkItemSection[] = [
+  { id: 'sec-bugs', label: 'Bugs', conditions: [{ field: 'workItemType', operator: 'equals', value: 'Bug' }], sortOrder: 1, enabled: true, defaultCollapsed: false, ...DEFAULT_SECTION_ORDERING },
+  { id: 'sec-letsdrive', label: 'LetsDrive', conditions: [{ field: 'project', operator: 'equals', value: 'LetsDrive' }], sortOrder: 2, enabled: true, defaultCollapsed: false, ...DEFAULT_SECTION_ORDERING },
+  { id: 'sec-tfn', label: 'TFN Project', conditions: [{ field: 'project', operator: 'equals', value: 'TFN Project' }], sortOrder: 3, enabled: true, defaultCollapsed: false, ...DEFAULT_SECTION_ORDERING },
+];
+
 /** Seed mapping rules + quick templates the first time (so the rail is meaningful). */
 export async function seedDemo(repos: AppRepositories): Promise<void> {
   if ((await repos.mappingRules.list()).length === 0) {
     for (const r of demoMappingRules) await repos.mappingRules.upsert(r);
+  }
+  if ((await repos.workItemSections.list()).length === 0) {
+    for (const s of demoSections) await repos.workItemSections.upsert(s);
   }
   if ((await repos.quickTemplates.list()).length === 0) {
     for (const t of demoQuickTemplates) await repos.quickTemplates.upsert(t);

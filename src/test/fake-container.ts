@@ -26,6 +26,11 @@ export function makeFakeContainer(overrides: Partial<Container> = {}): Container
         upsert: notImplemented('repos.mappingRules.upsert'),
         delete: notImplemented('repos.mappingRules.delete'),
       },
+      workItemSections: {
+        list: notImplemented('repos.workItemSections.list'),
+        upsert: notImplemented('repos.workItemSections.upsert'),
+        delete: notImplemented('repos.workItemSections.delete'),
+      },
       calendarAccounts: {
         list: notImplemented('repos.calendarAccounts.list'),
         upsert: notImplemented('repos.calendarAccounts.upsert'),
